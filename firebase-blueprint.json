@@ -1,0 +1,62 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile with role-based access control.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "email": { "type": "string", "format": "email" },
+        "role": { "type": "string", "enum": ["super_admin", "user"] },
+        "allowed_hotels": { "type": "array", "items": { "type": "string" }, "description": "Array of hotel_codes the user can access" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "Hotel": {
+      "title": "Hotel",
+      "description": "Hotel configuration including API keys.",
+      "type": "object",
+      "properties": {
+        "hotel_code": { "type": "string" },
+        "name": { "type": "string" },
+        "api_key": { "type": "string" },
+        "is_active": { "type": "boolean" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      },
+      "required": ["hotel_code", "name", "api_key", "is_active"]
+    },
+    "QueryTemplate": {
+      "title": "QueryTemplate",
+      "description": "Global query templates used across all hotels.",
+      "type": "object",
+      "properties": {
+        "query_name": { "type": "string" },
+        "api_url": { "type": "string" },
+        "api_object": { "type": "string" },
+        "payload_template": { "type": "string" },
+        "response_index": { "type": "number" },
+        "is_active": { "type": "boolean" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      },
+      "required": ["query_name", "api_url", "api_object", "payload_template", "response_index", "is_active"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profiles"
+    },
+    "/hotels/{hotelId}": {
+      "schema": { "$ref": "#/entities/Hotel" },
+      "description": "Hotel configurations"
+    },
+    "/queries/{queryId}": {
+      "schema": { "$ref": "#/entities/QueryTemplate" },
+      "description": "Global query templates"
+    }
+  }
+}

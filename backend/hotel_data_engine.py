@@ -1,3 +1,4 @@
+import json
 import requests
 import pandas as pd
 from datetime import datetime
@@ -8,20 +9,28 @@ class HotelDataEngine:
         self.hotel_id = hotel_id
         self.base_url = "https://api.easypms.com/v1" # Örnek URL
 
-    def get_dynamic_data(self, from_date: str, to_date: str, query_template: dict):
+    def execute_dynamic_query(self, query_template: dict, start_date: str, end_date: str):
         """
-        Dinamik sorgu şablonuna göre veri çeker.
+        İş Zekası (BI) Motoru: Dinamik sorgu şablonuna göre veri çeker.
         """
-        payload = {
+        # 1. Payload Template'i al ve yer tutucuları (placeholders) değiştir
+        payload_str = query_template.get("payload_template", "{}")
+        payload_str = payload_str.replace("{{HOTEL_ID}}", str(self.hotel_id))
+        payload_str = payload_str.replace("{{START_DATE}}", start_date)
+        payload_str = payload_str.replace("{{END_DATE}}", end_date)
+        
+        try:
+            # String'i JSON objesine çevir
+            payload_params = json.loads(payload_str)
+        except json.JSONDecodeError as e:
+            print(f"JSON Parse Hatası (Payload Template geçersiz): {e}")
+            return pd.DataFrame()
+
+        # 2. API İsteği Gövdesini Hazırla
+        api_request_body = {
             "Action": "Execute",
-            "Object": query_template["api_object"],
-            "Parameters": {
-                "HOTELID": self.hotel_id,
-                "FROMDATE": from_date,
-                "TODATE": to_date,
-                "COLUMNSGROUPED": query_template["columns_grouped"],
-                "COLUMNSSUMMED": query_template["columns_summed"]
-            }
+            "Object": query_template.get("api_object"),
+            "Parameters": payload_params
         }
         
         headers = {
@@ -31,21 +40,38 @@ class HotelDataEngine:
         
         try:
             # Gerçek senaryoda:
-            # response = requests.post(f"{self.base_url}/data", json=payload, headers=headers)
+            # response = requests.post(f"{self.base_url}/data", json=api_request_body, headers=headers)
             # response.raise_for_status()
-            # data = response.json()
+            # data = response.json() # Array of Arrays döner
             
-            # Simülasyon için mock veri döndürüyoruz
-            print(f"API İsteği Atıldı: {payload}")
+            print(f"BI Motoru - API İsteği Atıldı:\n{json.dumps(api_request_body, indent=2)}")
             
-            # Pandas DataFrame'e çevirme simülasyonu
-            mock_data = [
-                {"SALEDATE": from_date, "ROOMREVENUE": 15000, "PAX": 200},
-                {"SALEDATE": to_date, "ROOMREVENUE": 16000, "PAX": 210}
+            # Simülasyon: API'den dönen Array of Arrays yanıtı
+            mock_api_response = [
+                [ # 0. İndeks (Asıl Veri)
+                    {"SALEDATE": start_date, "ROOMREVENUE": 15000, "PAX": 200, "OCCUPANCY": 85.5},
+                    {"SALEDATE": end_date, "ROOMREVENUE": 16000, "PAX": 210, "OCCUPANCY": 90.0}
+                ],
+                [ # 1. İndeks (Özet/Meta Veri)
+                    {"TOTAL_REVENUE": 31000, "TOTAL_PAX": 410, "AVG_OCCUPANCY": 87.75}
+                ]
             ]
-            df = pd.DataFrame(mock_data)
+            
+            # 3. Response Index'e göre hedef diziyi seç
+            res_index = query_template.get("response_index", 0)
+            if res_index < len(mock_api_response):
+                target_data = mock_api_response[res_index]
+            else:
+                target_data = []
+            
+            # 4. Pandas DataFrame'e çevir ve tipleri otomatik algıla
+            df = pd.DataFrame(target_data)
+            
+            # Veri tiplerini otomatik dönüştür (sayıları int/float yapar)
+            df = df.convert_dtypes()
+            
             return df
             
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             print(f"API Hatası: {e}")
             return pd.DataFrame()

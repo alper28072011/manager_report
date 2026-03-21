@@ -1,0 +1,98 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'super_admin' ||
+        (request.auth.token.email == "alper28072011@gmail.com" && request.auth.token.email_verified == true)
+      );
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'role']) &&
+             data.uid is string &&
+             data.email is string &&
+             data.role in ['super_admin', 'user'] &&
+             (!('allowed_hotels' in data) || data.allowed_hotels is list);
+    }
+
+    function isValidHotel(data) {
+      return data.keys().hasAll(['hotel_code', 'name', 'api_key', 'is_active']) &&
+             data.hotel_code is string && data.hotel_code.size() > 0 && data.hotel_code.size() < 50 &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.api_key is string && data.api_key.size() > 0 && data.api_key.size() < 200 &&
+             data.is_active is bool;
+    }
+
+    function isValidQuery(data) {
+      return data.keys().hasAll(['query_name', 'api_url', 'api_object', 'payload_template', 'response_index', 'is_active']) &&
+             data.query_name is string && data.query_name.size() > 0 && data.query_name.size() < 100 &&
+             data.api_url is string && data.api_url.size() > 0 && data.api_url.size() < 500 &&
+             data.api_object is string && data.api_object.size() > 0 && data.api_object.size() < 100 &&
+             data.payload_template is string && data.payload_template.size() > 0 && data.payload_template.size() < 10000 &&
+             data.response_index is number &&
+             data.is_active is bool;
+    }
+
+    // ===============================================================
+    // Collections
+    // ===============================================================
+
+    match /users/{userId} {
+      // Users can read their own profile, Admins can read all
+      allow read: if isOwner(userId) || isAdmin();
+      
+      // Only admins can create users, EXCEPT the first admin or self-registration as 'user'
+      allow create: if isAuthenticated() && isValidUser(request.resource.data) && (
+        isAdmin() || 
+        (isOwner(userId) && request.resource.data.role == 'user') ||
+        (isOwner(userId) && request.resource.data.role == 'super_admin' && request.auth.token.email == "alper28072011@gmail.com")
+      );
+      
+      // Only admins can update roles/allowed_hotels. Users can't update their own role.
+      allow update: if isAuthenticated() && isValidUser(request.resource.data) && (
+        isAdmin() || 
+        (isOwner(userId) && request.resource.data.role == resource.data.role && request.resource.data.allowed_hotels == resource.data.allowed_hotels)
+      );
+      
+      allow delete: if isAdmin();
+    }
+
+    match /hotels/{hotelId} {
+      // Admins can read all. Users can read hotels they are allowed to access.
+      allow read: if isAdmin() || (
+        isAuthenticated() && 
+        resource.data.hotel_code in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.allowed_hotels
+      );
+      
+      allow create: if isAdmin() && isValidHotel(request.resource.data);
+      allow update: if isAdmin() && isValidHotel(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /queries/{queryId} {
+      // All authenticated users can read queries
+      allow read: if isAuthenticated();
+      
+      allow create: if isAdmin() && isValidQuery(request.resource.data);
+      allow update: if isAdmin() && isValidQuery(request.resource.data);
+      allow delete: if isAdmin();
+    }
+  }
+}

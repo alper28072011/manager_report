@@ -36,8 +36,8 @@ class QueryTemplate(Base):
     hotel_id = Column(Integer, ForeignKey("hotels.id"))
     query_name = Column(String)
     api_object = Column(String)
-    columns_grouped = Column(String) # JSON or Text
-    columns_summed = Column(String) # JSON or Text
+    payload_template = Column(String) # JSON formatında metin, dinamik yer tutucular içerir
+    response_index = Column(Integer, default=0) # API'den dönen diziler içindeki hedef indeks
     is_active = Column(Boolean, default=True)
     
     hotel = relationship("Hotel", back_populates="queries")
