@@ -84,7 +84,7 @@ export interface Hotel {
 }
 
 export type AggregationType = 'SUM' | 'AVG' | 'MIN' | 'MAX' | 'COUNT';
-export type ChartType = 'TABLE' | 'BAR' | 'LINE' | 'PIE';
+export type ChartType = 'TABLE' | 'BAR' | 'LINE' | 'PIE' | 'MATRIX' | 'HORIZONTAL_BAR';
 
 export interface ReportDimension {
   columnName: string;
@@ -102,8 +102,9 @@ export interface ReportArea {
   title: string;
   subtitle?: string;
   queryId: string;
-  dimensions: ReportDimension[];
-  metrics: ReportMetric[];
+  dimensions: ReportDimension[]; // Satırlar (Rows)
+  columns?: ReportDimension[]; // Sütunlar (Columns)
+  metrics: ReportMetric[]; // Değerler (Values)
   chartType: ChartType;
   parameters?: Record<string, string>;
 }

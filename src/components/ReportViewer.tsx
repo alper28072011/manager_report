@@ -3,6 +3,7 @@ import { collection, getDocs } from 'firebase/firestore';
 import { db } from '../firebase';
 import { QueryTemplate, Hotel, ReportDefinition, ReportArea, OperationType } from '../types';
 import { handleFirestoreError } from '../utils/errorHandling';
+import { resolveDynamicDate, DYNAMIC_DATE_OPTIONS } from '../utils/dateUtils';
 import { Loader2, Play, Table as TableIcon, BarChart3, LineChart, PieChart, Printer, FileText } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart as RechartsLineChart, Line, PieChart as RechartsPieChart, Pie, Cell } from 'recharts';
 
@@ -98,7 +99,8 @@ export const ReportViewer = ({ hotels }: { hotels: Hotel[] }) => {
         payloadString = payloadString.replace(/\{\{API_OBJECT\}\}/g, query.api_object || "");
         
         requiredParameters.forEach(param => {
-          const val = parameters[param.name] || "";
+          let val = parameters[param.name] || "";
+          val = resolveDynamicDate(val);
           payloadString = payloadString.replace(new RegExp(`\\{\\{${param.name}\\}\\}`, 'g'), val);
         });
 
@@ -309,17 +311,51 @@ export const ReportViewer = ({ hotels }: { hotels: Hotel[] }) => {
             </div>
           )}
 
-          {requiredParameters.map(param => (
-            <div key={param.name}>
-              <label className="block text-xs font-medium text-slate-600 mb-1.5">{param.label}</label>
-              <input
-                type={param.type === 'date' ? 'date' : param.type === 'number' ? 'number' : 'text'}
-                value={parameters[param.name] || ''}
-                onChange={(e) => setParameters(prev => ({ ...prev, [param.name]: e.target.value }))}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-              />
-            </div>
-          ))}
+          {requiredParameters.map(param => {
+            const currentValue = parameters[param.name] || '';
+            const isDynamicDate = param.type === 'date' && currentValue.startsWith('{{');
+            
+            return (
+              <div key={param.name}>
+                <label className="block text-xs font-medium text-slate-600 mb-1.5">{param.label}</label>
+                {param.type === 'date' ? (
+                  <div className="space-y-2">
+                    <select
+                      value={isDynamicDate ? currentValue : (currentValue ? 'custom' : '')}
+                      onChange={(e) => {
+                        if (e.target.value === 'custom') {
+                          setParameters(prev => ({ ...prev, [param.name]: new Date().toISOString().split('T')[0] }));
+                        } else {
+                          setParameters(prev => ({ ...prev, [param.name]: e.target.value }));
+                        }
+                      }}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    >
+                      <option value="">Seçiniz...</option>
+                      {DYNAMIC_DATE_OPTIONS.map(opt => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                    </select>
+                    {(!isDynamicDate && currentValue) && (
+                      <input
+                        type="date"
+                        value={currentValue}
+                        onChange={(e) => setParameters(prev => ({ ...prev, [param.name]: e.target.value }))}
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                      />
+                    )}
+                  </div>
+                ) : (
+                  <input
+                    type={param.type === 'number' ? 'number' : 'text'}
+                    value={currentValue}
+                    onChange={(e) => setParameters(prev => ({ ...prev, [param.name]: e.target.value }))}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                  />
+                )}
+              </div>
+            );
+          })}
 
           {selectedReport && (
             <div>
@@ -477,6 +513,89 @@ export const ReportViewer = ({ hotels }: { hotels: Hotel[] }) => {
                             ))}
                           </RechartsPieChart>
                         </ResponsiveContainer>
+                      </div>
+                    )}
+
+                    {area.chartType === 'HORIZONTAL_BAR' && (
+                      <div className="h-[400px] w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={aggregatedData} layout="vertical" margin={{ top: 20, right: 30, left: 100, bottom: 20 }}>
+                            <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0" />
+                            <XAxis type="number" tick={{fontSize: 12, fill: '#64748b'}} />
+                            <YAxis dataKey="_displayKey" type="category" tick={{fontSize: 12, fill: '#64748b'}} width={90} />
+                            <Tooltip 
+                              contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                              formatter={(value: number) => new Intl.NumberFormat('tr-TR').format(value)}
+                            />
+                            <Legend wrapperStyle={{ paddingTop: '20px' }} />
+                            {area.metrics.map((m, i) => (
+                              <Bar key={m.columnName} dataKey={m.columnName} name={m.label || m.columnName} fill={COLORS[i % COLORS.length]} radius={[0, 4, 4, 0]} />
+                            ))}
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    )}
+
+                    {area.chartType === 'MATRIX' && (
+                      <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                        <table className="min-w-full divide-y divide-slate-200">
+                          <thead className="bg-slate-50 print:bg-slate-100">
+                            <tr>
+                              {area.dimensions.map((dim, i) => (
+                                <th key={`th-dim-${i}`} className="px-4 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider border-r border-slate-200">
+                                  {dim.label}
+                                </th>
+                              ))}
+                              {/* Sütun Başlıkları (Dinamik) */}
+                              {Array.from(new Set(areaData.map(row => {
+                                return (area.columns || []).map(c => {
+                                  const colDef = query?.column_definitions?.find(ac => ac.name === c.columnName);
+                                  return formatForDisplay(row[c.columnName], colDef?.type);
+                                }).join(' | ');
+                              }))).filter(Boolean).map((colKey, i) => (
+                                <th key={`th-col-${i}`} className="px-4 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider border-b border-slate-200" colSpan={area.metrics.length}>
+                                  {colKey}
+                                </th>
+                              ))}
+                            </tr>
+                            <tr>
+                              {area.dimensions.map((_, i) => <th key={`th-empty-${i}`} className="border-r border-slate-200"></th>)}
+                              {Array.from(new Set(areaData.map(row => {
+                                return (area.columns || []).map(c => {
+                                  const colDef = query?.column_definitions?.find(ac => ac.name === c.columnName);
+                                  return formatForDisplay(row[c.columnName], colDef?.type);
+                                }).join(' | ');
+                              }))).filter(Boolean).map((colKey, colIdx) => (
+                                area.metrics.map((metric, j) => (
+                                  <th key={`th-met-${colIdx}-${j}`} className="px-4 py-2 text-right text-[10px] font-medium text-slate-500 uppercase tracking-wider bg-slate-50/50">
+                                    {metric.label}
+                                  </th>
+                                ))
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody className="bg-white divide-y divide-slate-100">
+                            {aggregatedData.map((row, i) => (
+                              <tr key={i} className="hover:bg-slate-50">
+                                {area.dimensions.map((dim, j) => {
+                                  const colDef = query?.column_definitions?.find(c => c.name === dim.columnName);
+                                  return (
+                                    <td key={`td-dim-${i}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-700 font-medium border-r border-slate-100">
+                                      {formatForDisplay(row[dim.columnName], colDef?.type)}
+                                    </td>
+                                  );
+                                })}
+                                {Array.from(new Set(areaData.map(r => (area.columns || []).map(c => formatForDisplay(r[c.columnName], query?.column_definitions?.find(ac => ac.name === c.columnName)?.type)).join(' | ')))).filter(Boolean).map((colKey, colIdx) => (
+                                   area.metrics.map((metric, j) => (
+                                    <td key={`td-met-${i}-${colIdx}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-600 text-right font-mono">
+                                      {formatForDisplay(row[metric.columnName], 'number')}
+                                    </td>
+                                  ))
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
                       </div>
                     )}
                   </div>

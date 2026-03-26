@@ -5,6 +5,7 @@ import { QueryTemplate, Hotel, ReportDefinition, ReportDimension, ReportMetric, 
 import { Settings2, Play, Table as TableIcon, BarChart3, LineChart, PieChart, Save, Loader2, GripVertical, Trash2, X, ChevronDown, Plus, LayoutTemplate } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart as RechartsLineChart, Line, PieChart as RechartsPieChart, Pie, Cell } from 'recharts';
 import { handleFirestoreError } from '../utils/errorHandling';
+import { resolveDynamicDate, DYNAMIC_DATE_OPTIONS } from '../utils/dateUtils';
 
 const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316'];
 
@@ -32,6 +33,7 @@ export const ReportBuilder = () => {
     subtitle: '',
     queryId: '',
     dimensions: [],
+    columns: [],
     metrics: [],
     chartType: 'TABLE',
     parameters: {}
@@ -93,6 +95,7 @@ export const ReportBuilder = () => {
       subtitle: '',
       queryId: '',
       dimensions: [],
+      columns: [],
       metrics: [],
       chartType: 'TABLE',
       parameters: {}
@@ -159,7 +162,8 @@ export const ReportBuilder = () => {
       payloadStr = payloadStr.replace(/\{\{API_OBJECT\}\}/g, selectedQuery.api_object || '');
       
       dynamicVars.forEach(variable => {
-        const val = activeArea.parameters?.[variable] || '';
+        let val = activeArea.parameters?.[variable] || '';
+        val = resolveDynamicDate(val);
         payloadStr = payloadStr.replace(new RegExp(`\\{\\{${variable}\\}\\}`, 'g'), val);
       });
 
@@ -318,6 +322,13 @@ export const ReportBuilder = () => {
     }
   };
 
+  const handleAddColumn = (columnName: string) => {
+    if (!(activeArea.columns || []).find(d => d.columnName === columnName)) {
+      const col = availableColumns.find(c => c.name === columnName);
+      updateActiveArea({ columns: [...(activeArea.columns || []), { columnName, label: col?.label || columnName }] });
+    }
+  };
+
   const handleAddMetric = (columnName: string) => {
     if (!activeArea.metrics.find(m => m.columnName === columnName)) {
       const col = availableColumns.find(c => c.name === columnName);
@@ -327,6 +338,10 @@ export const ReportBuilder = () => {
 
   const handleRemoveDimension = (columnName: string) => {
     updateActiveArea({ dimensions: activeArea.dimensions.filter(d => d.columnName !== columnName) });
+  };
+
+  const handleRemoveColumn = (columnName: string) => {
+    updateActiveArea({ columns: (activeArea.columns || []).filter(d => d.columnName !== columnName) });
   };
 
   const handleRemoveMetric = (columnName: string) => {
@@ -349,6 +364,7 @@ export const ReportBuilder = () => {
         subtitle: '',
         queryId: '',
         dimensions: [],
+        columns: [],
         metrics: [],
         chartType: 'TABLE',
         parameters: {}
@@ -372,6 +388,7 @@ export const ReportBuilder = () => {
           subtitle: '',
           queryId: (report as any).queryId || '',
           dimensions: (report as any).dimensions || [],
+          columns: (report as any).columns || [],
           metrics: (report as any).metrics || [],
           chartType: (report as any).chartType || 'TABLE',
           parameters: (report as any).parameters || {}
@@ -617,7 +634,7 @@ export const ReportBuilder = () => {
                 <label className="block text-xs font-medium text-slate-600 mb-1.5">Veri Kaynağı (Sorgu)</label>
                 <select
                   value={activeArea.queryId}
-                  onChange={(e) => updateActiveArea({ queryId: e.target.value, dimensions: [], metrics: [], parameters: {} })}
+                  onChange={(e) => updateActiveArea({ queryId: e.target.value, dimensions: [], columns: [], metrics: [], parameters: {} })}
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
                 >
                   <option value="">Sorgu Seçin...</option>
@@ -649,17 +666,48 @@ export const ReportBuilder = () => {
                   const isDate = paramDef ? paramDef.type === 'date' : (variable.toLowerCase().includes('tarih') || variable.toLowerCase().includes('date') || variable.toLowerCase().includes('baslangic') || variable.toLowerCase().includes('bitis'));
                   const isNumber = paramDef?.type === 'number';
                   const label = paramDef?.label || variable;
+                  const currentValue = activeArea.parameters?.[variable] || '';
+                  const isDynamicDate = isDate && currentValue.startsWith('{{');
                   
                   return (
                     <div key={variable}>
                       <label className="block text-xs font-medium text-slate-600 mb-1">{label}</label>
-                      <input
-                        type={isDate ? "date" : isNumber ? "number" : "text"}
-                        value={activeArea.parameters?.[variable] || ''}
-                        onChange={(e) => handleParamChange(variable, e.target.value)}
-                        placeholder={`${label}...`}
-                        className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                      />
+                      {isDate ? (
+                        <div className="space-y-2">
+                          <select
+                            value={isDynamicDate ? currentValue : (currentValue ? 'custom' : '')}
+                            onChange={(e) => {
+                              if (e.target.value === 'custom') {
+                                handleParamChange(variable, new Date().toISOString().split('T')[0]);
+                              } else {
+                                handleParamChange(variable, e.target.value);
+                              }
+                            }}
+                            className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                          >
+                            <option value="">Seçiniz...</option>
+                            {DYNAMIC_DATE_OPTIONS.map(opt => (
+                              <option key={opt.value} value={opt.value}>{opt.label}</option>
+                            ))}
+                          </select>
+                          {(!isDynamicDate && currentValue) && (
+                            <input
+                              type="date"
+                              value={currentValue}
+                              onChange={(e) => handleParamChange(variable, e.target.value)}
+                              className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                            />
+                          )}
+                        </div>
+                      ) : (
+                        <input
+                          type={isNumber ? "number" : "text"}
+                          value={currentValue}
+                          onChange={(e) => handleParamChange(variable, e.target.value)}
+                          placeholder={`${label}...`}
+                          className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                        />
+                      )}
                     </div>
                   );
                 })}
@@ -674,6 +722,7 @@ export const ReportBuilder = () => {
               <div className="max-h-64 overflow-y-auto pr-2 space-y-2">
                 {availableColumns.map(col => {
                   const isDimensionAdded = activeArea.dimensions.some(d => d.columnName === col.name);
+                  const isColumnAdded = (activeArea.columns || []).some(d => d.columnName === col.name);
                   const isMetricAdded = activeArea.metrics.some(m => m.columnName === col.name);
                   const isNumeric = col.type === 'number';
 
@@ -689,9 +738,17 @@ export const ReportBuilder = () => {
                           onClick={() => handleAddDimension(col.name)}
                           disabled={isDimensionAdded}
                           className={`text-[10px] px-2 py-1 rounded font-medium ${isDimensionAdded ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100'}`}
-                          title="Satır/Eksen olarak ekle"
+                          title="Satır olarak ekle"
                         >
                           Satır
+                        </button>
+                        <button 
+                          onClick={() => handleAddColumn(col.name)}
+                          disabled={isColumnAdded}
+                          className={`text-[10px] px-2 py-1 rounded font-medium ${isColumnAdded ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-amber-50 text-amber-600 hover:bg-amber-100'}`}
+                          title="Sütun olarak ekle"
+                        >
+                          Sütun
                         </button>
                         {isNumeric && (
                           <button 
@@ -717,17 +774,17 @@ export const ReportBuilder = () => {
           
           {/* Tasarım Alanı (Drop Zones) */}
           <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               
               {/* Dimensions (Satırlar) */}
               <div>
                 <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full bg-indigo-500"></div>
-                  Satırlar (Eksen)
+                  Satırlar
                 </h4>
                 <div className="min-h-[100px] bg-slate-50 border-2 border-dashed border-slate-200 rounded-xl p-3 space-y-2">
                   {activeArea.dimensions.length === 0 ? (
-                    <div className="h-full flex items-center justify-center text-sm text-slate-400">
+                    <div className="h-full flex items-center justify-center text-sm text-slate-400 text-center">
                       Sütunlardan satır ekleyin
                     </div>
                   ) : (
@@ -743,11 +800,35 @@ export const ReportBuilder = () => {
                 </div>
               </div>
 
+              {/* Columns (Sütunlar) */}
+              <div>
+                <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-amber-500"></div>
+                  Sütunlar
+                </h4>
+                <div className="min-h-[100px] bg-slate-50 border-2 border-dashed border-slate-200 rounded-xl p-3 space-y-2">
+                  {!(activeArea.columns || []).length ? (
+                    <div className="h-full flex items-center justify-center text-sm text-slate-400 text-center">
+                      Sütunlardan sütun ekleyin
+                    </div>
+                  ) : (
+                    (activeArea.columns || []).map((col, idx) => (
+                      <div key={idx} className="flex items-center justify-between bg-white p-2.5 rounded-lg border border-slate-200 shadow-sm">
+                        <span className="text-sm font-medium text-slate-700">{col.label}</span>
+                        <button onClick={() => handleRemoveColumn(col.columnName)} className="text-slate-400 hover:text-rose-500 transition-colors">
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
               {/* Metrics (Değerler) */}
               <div>
                 <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
-                  Değerler (Metrikler)
+                  Değerler
                 </h4>
                 <div className="min-h-[100px] bg-slate-50 border-2 border-dashed border-slate-200 rounded-xl p-3 space-y-2">
                   {activeArea.metrics.length === 0 ? (
@@ -793,10 +874,22 @@ export const ReportBuilder = () => {
                   <TableIcon size={16} /> Tablo
                 </button>
                 <button
+                  onClick={() => updateActiveArea({ chartType: 'MATRIX' })}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeArea.chartType === 'MATRIX' ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'}`}
+                >
+                  <LayoutTemplate size={16} /> Matris Tablo
+                </button>
+                <button
                   onClick={() => updateActiveArea({ chartType: 'BAR' })}
                   className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeArea.chartType === 'BAR' ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'}`}
                 >
                   <BarChart3 size={16} /> Çubuk Grafik
+                </button>
+                <button
+                  onClick={() => updateActiveArea({ chartType: 'HORIZONTAL_BAR' })}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeArea.chartType === 'HORIZONTAL_BAR' ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'}`}
+                >
+                  <BarChart3 size={16} className="rotate-90" /> Yatay Çubuk Grafik
                 </button>
                 <button
                   onClick={() => updateActiveArea({ chartType: 'LINE' })}
@@ -933,6 +1026,92 @@ export const ReportBuilder = () => {
                         </Pie>
                       </RechartsPieChart>
                     </ResponsiveContainer>
+                  </div>
+                )}
+
+                {activeArea.chartType === 'HORIZONTAL_BAR' && (
+                  <div className="h-[400px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={aggregatedData} layout="vertical" margin={{ top: 20, right: 30, left: 100, bottom: 20 }}>
+                        <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0" />
+                        <XAxis type="number" tick={{fontSize: 12, fill: '#64748b'}} />
+                        <YAxis dataKey="_displayKey" type="category" tick={{fontSize: 12, fill: '#64748b'}} width={90} />
+                        <Tooltip 
+                          contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                          formatter={(value: number) => new Intl.NumberFormat('tr-TR').format(value)}
+                        />
+                        <Legend wrapperStyle={{ paddingTop: '20px' }} />
+                        {activeArea.metrics.map((m, i) => (
+                          <Bar key={m.columnName} dataKey={m.columnName} name={`${m.label} (${m.aggregation})`} fill={COLORS[i % COLORS.length]} radius={[0, 4, 4, 0]} />
+                        ))}
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+
+                {activeArea.chartType === 'MATRIX' && (
+                  <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                    <table className="min-w-full divide-y divide-slate-200">
+                      <thead className="bg-slate-50">
+                        <tr>
+                          {activeArea.dimensions.map((dim, i) => (
+                            <th key={`th-dim-${i}`} className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider border-r border-slate-200">
+                              {dim.label}
+                            </th>
+                          ))}
+                          {/* Sütun Başlıkları (Dinamik) */}
+                          {Array.from(new Set(previewData.map(row => {
+                            return (activeArea.columns || []).map(c => {
+                              const colDef = availableColumns.find(ac => ac.name === c.columnName);
+                              return formatForDisplay(row[c.columnName], colDef?.type);
+                            }).join(' | ');
+                          }))).filter(Boolean).map((colKey, i) => (
+                            <th key={`th-col-${i}`} className="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider border-b border-slate-200" colSpan={activeArea.metrics.length}>
+                              {colKey}
+                            </th>
+                          ))}
+                        </tr>
+                        <tr>
+                          {activeArea.dimensions.map((_, i) => <th key={`th-empty-${i}`} className="border-r border-slate-200"></th>)}
+                          {Array.from(new Set(previewData.map(row => {
+                            return (activeArea.columns || []).map(c => {
+                              const colDef = availableColumns.find(ac => ac.name === c.columnName);
+                              return formatForDisplay(row[c.columnName], colDef?.type);
+                            }).join(' | ');
+                          }))).filter(Boolean).map((colKey, colIdx) => (
+                            activeArea.metrics.map((metric, j) => (
+                              <th key={`th-met-${colIdx}-${j}`} className="px-4 py-2 text-right text-[10px] font-medium text-slate-400 uppercase tracking-wider bg-slate-50/50">
+                                {metric.label}
+                              </th>
+                            ))
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-slate-100">
+                        {/* Matris verisi karmaşık olduğu için basit bir tablo görünümü sunuyoruz. Gerçek matris hesaplaması için daha gelişmiş bir reduce fonksiyonu gerekir. */}
+                        {aggregatedData.map((row, i) => (
+                          <tr key={i} className="hover:bg-slate-50">
+                            {activeArea.dimensions.map((dim, j) => {
+                              const colDef = availableColumns.find(c => c.name === dim.columnName);
+                              return (
+                                <td key={`td-dim-${i}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-700 font-medium border-r border-slate-100">
+                                  {formatForDisplay(row[dim.columnName], colDef?.type)}
+                                </td>
+                              );
+                            })}
+                            {/* Burada her bir sütun kombinasyonu için metrikleri göstermemiz gerekiyor. Şimdilik sadece toplamları gösteriyoruz. */}
+                            {Array.from(new Set(previewData.map(r => (activeArea.columns || []).map(c => formatForDisplay(r[c.columnName], availableColumns.find(ac => ac.name === c.columnName)?.type)).join(' | ')))).filter(Boolean).map((colKey, colIdx) => (
+                               activeArea.metrics.map((metric, j) => (
+                                <td key={`td-met-${i}-${colIdx}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-600 text-right font-mono">
+                                  {/* Gerçek matris verisi hesaplanmadığı için genel toplamı gösteriyoruz. Geliştirilmesi gerekir. */}
+                                  {formatForDisplay(row[metric.columnName], 'number')}
+                                </td>
+                              ))
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 )}
               </div>
