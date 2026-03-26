@@ -1,3 +1,12 @@
+export interface ReportView {
+  id?: string;
+  name: string;
+  hotel_code: string;
+  parameters: Record<string, string>;
+  visible_columns: Record<string, string[]>;
+  created_at?: any;
+}
+
 export enum OperationType {
   CREATE = 'create',
   UPDATE = 'update',
@@ -36,6 +45,20 @@ export interface NationalityData {
   value: number;
 }
 
+export interface ColumnDefinition {
+  name: string;
+  label: string;
+  type: 'string' | 'number' | 'date' | 'boolean';
+  format?: string;
+}
+
+export interface ParameterDefinition {
+  name: string;
+  label: string;
+  type: 'string' | 'number' | 'date';
+  default_value?: string;
+}
+
 export interface QueryTemplate {
   id: string;
   query_name: string;
@@ -44,6 +67,8 @@ export interface QueryTemplate {
   payload_template: string;
   response_index: number;
   is_active: boolean;
+  column_definitions?: ColumnDefinition[];
+  parameter_definitions?: ParameterDefinition[];
   createdAt?: any;
   updatedAt?: any;
 }
@@ -54,6 +79,40 @@ export interface Hotel {
   name: string;
   api_key: string;
   is_active: boolean;
+  createdAt?: any;
+  updatedAt?: any;
+}
+
+export type AggregationType = 'SUM' | 'AVG' | 'MIN' | 'MAX' | 'COUNT';
+export type ChartType = 'TABLE' | 'BAR' | 'LINE' | 'PIE';
+
+export interface ReportDimension {
+  columnName: string;
+  label?: string;
+}
+
+export interface ReportMetric {
+  columnName: string;
+  label?: string;
+  aggregation: AggregationType;
+}
+
+export interface ReportArea {
+  id: string;
+  title: string;
+  subtitle?: string;
+  queryId: string;
+  dimensions: ReportDimension[];
+  metrics: ReportMetric[];
+  chartType: ChartType;
+  parameters?: Record<string, string>;
+}
+
+export interface ReportDefinition {
+  id: string;
+  name: string;
+  description?: string;
+  areas: ReportArea[];
   createdAt?: any;
   updatedAt?: any;
 }

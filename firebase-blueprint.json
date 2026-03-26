@@ -43,6 +43,19 @@
         "updatedAt": { "type": "timestamp" }
       },
       "required": ["query_name", "api_url", "api_object", "payload_template", "response_index", "is_active"]
+    },
+    "ReportView": {
+      "title": "ReportView",
+      "description": "Saved report parameters and column visibility preferences.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "hotel_code": { "type": "string" },
+        "parameters": { "type": "object" },
+        "visible_columns": { "type": "object" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "hotel_code", "parameters", "visible_columns"]
     }
   },
   "firestore": {
@@ -57,6 +70,10 @@
     "/queries/{queryId}": {
       "schema": { "$ref": "#/entities/QueryTemplate" },
       "description": "Global query templates"
+    },
+    "/report_views/{viewId}": {
+      "schema": { "$ref": "#/entities/ReportView" },
+      "description": "Stores saved report views."
     }
   }
 }

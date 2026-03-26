@@ -94,5 +94,8 @@ service cloud.firestore {
       allow update: if isAdmin() && isValidQuery(request.resource.data);
       allow delete: if isAdmin();
     }
+    match /report_views/{viewId} {
+      allow read, write: if isAuthenticated();
+    }
   }
 }
