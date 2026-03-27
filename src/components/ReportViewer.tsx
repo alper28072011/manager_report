@@ -1,13 +1,323 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { collection, getDocs } from 'firebase/firestore';
+import { collection, getDocs, doc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { QueryTemplate, Hotel, ReportDefinition, ReportArea, OperationType } from '../types';
 import { handleFirestoreError } from '../utils/errorHandling';
 import { resolveDynamicDate, DYNAMIC_DATE_OPTIONS } from '../utils/dateUtils';
-import { Loader2, Play, Table as TableIcon, BarChart3, LineChart, PieChart, Printer, FileText } from 'lucide-react';
+import { Loader2, Play, Table as TableIcon, BarChart3, LineChart, PieChart, Printer, FileText, Save, ArrowUp, ArrowDown } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart as RechartsLineChart, Line, PieChart as RechartsPieChart, Pie, Cell } from 'recharts';
+import { useSortableData } from '../hooks/useSortableData';
 
 const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316'];
+
+const formatForDisplay = (value: any, type?: string) => {
+  if (value === null || value === undefined) return '-';
+  
+  if (type === 'date') {
+    try {
+      return new Intl.DateTimeFormat('tr-TR').format(new Date(value));
+    } catch (e) {
+      return value;
+    }
+  }
+  
+  if (type === 'number' || typeof value === 'number') {
+    return new Intl.NumberFormat('tr-TR').format(Number(value));
+  }
+  
+  return String(value);
+};
+
+const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData: any[], queries: QueryTemplate[] }) => {
+  const query = queries.find(q => q.id === area.queryId);
+  
+  const aggregatedData = useMemo(() => {
+    if (!rawData.length || area.dimensions.length === 0 || area.metrics.length === 0) return [];
+
+    const grouped = rawData.reduce((acc: any, row: any) => {
+      const keyParts = area.dimensions.map(d => {
+        const colDef = query?.column_definitions?.find(c => c.name === d.columnName);
+        return formatForDisplay(row[d.columnName], colDef?.type);
+      });
+      const key = keyParts.join(' | ');
+      
+      if (!acc[key]) {
+        acc[key] = { _displayKey: key, _count: 0 };
+        area.dimensions.forEach(d => acc[key][d.columnName] = row[d.columnName]);
+        area.metrics.forEach(m => {
+          acc[key][m.columnName] = m.aggregation === 'MIN' ? Infinity : m.aggregation === 'MAX' ? -Infinity : 0;
+        });
+      }
+      
+      acc[key]._count += 1;
+      area.metrics.forEach(m => {
+        const val = Number(row[m.columnName]) || 0;
+        switch (m.aggregation) {
+          case 'SUM':
+          case 'AVG':
+            acc[key][m.columnName] += val;
+            break;
+          case 'MIN':
+            acc[key][m.columnName] = Math.min(acc[key][m.columnName], val);
+            break;
+          case 'MAX':
+            acc[key][m.columnName] = Math.max(acc[key][m.columnName], val);
+            break;
+          case 'COUNT':
+            acc[key][m.columnName] = acc[key]._count;
+            break;
+        }
+      });
+      return acc;
+    }, {});
+
+    const result = Object.values(grouped);
+    
+    result.forEach((row: any) => {
+      area.metrics.forEach(m => {
+        if (m.aggregation === 'AVG' && row._count > 0) {
+          row[m.columnName] = row[m.columnName] / row._count;
+        }
+      });
+    });
+
+    return result;
+  }, [area, rawData, query]);
+
+  const { items: sortedData, requestSort, sortConfig } = useSortableData(aggregatedData);
+
+  const SortIcon = ({ columnKey }: { columnKey: string }) => {
+    if (sortConfig?.key !== columnKey) {
+      return <ArrowUp className="w-3 h-3 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity" />;
+    }
+    return sortConfig.direction === 'ascending' ? (
+      <ArrowUp className="w-3 h-3 text-indigo-600" />
+    ) : (
+      <ArrowDown className="w-3 h-3 text-indigo-600" />
+    );
+  };
+
+  if (!aggregatedData.length) {
+    return (
+      <div className="p-8 text-center text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+        Bu bölüm için veri bulunamadı.
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-full">
+      {area.chartType === 'TABLE' && (
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-slate-200">
+            <thead className="bg-slate-50 print:bg-slate-100">
+              <tr>
+                {area.dimensions.map((dim, i) => (
+                  <th 
+                    key={`th-dim-${i}`} 
+                    className="px-4 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider cursor-pointer group hover:bg-slate-100 transition-colors"
+                    onClick={() => requestSort(dim.columnName)}
+                  >
+                    <div className="flex items-center gap-1">
+                      {dim.label}
+                      <SortIcon columnKey={dim.columnName} />
+                    </div>
+                  </th>
+                ))}
+                {area.metrics.map((metric, i) => (
+                  <th 
+                    key={`th-met-${i}`} 
+                    className="px-4 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider cursor-pointer group hover:bg-slate-100 transition-colors"
+                    onClick={() => requestSort(metric.columnName)}
+                  >
+                    <div className="flex items-center justify-end gap-1">
+                      <SortIcon columnKey={metric.columnName} />
+                      {metric.label}
+                    </div>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-slate-100">
+              {sortedData.map((row: any, i: number) => (
+                <tr key={i} className="hover:bg-slate-50">
+                  {area.dimensions.map((dim, j) => {
+                    const colDef = query?.column_definitions?.find(c => c.name === dim.columnName);
+                    return (
+                      <td key={`td-dim-${i}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-700 font-medium">
+                        {formatForDisplay(row[dim.columnName], colDef?.type)}
+                      </td>
+                    );
+                  })}
+                  {area.metrics.map((metric, j) => (
+                    <td key={`td-met-${i}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-600 text-right font-mono">
+                      {formatForDisplay(row[metric.columnName], 'number')}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {area.chartType === 'BAR' && (
+        <div className="h-[400px] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={aggregatedData} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+              <XAxis dataKey="_displayKey" angle={-45} textAnchor="end" height={80} tick={{fontSize: 12, fill: '#64748b'}} />
+              <YAxis tick={{fontSize: 12, fill: '#64748b'}} />
+              <Tooltip 
+                contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                formatter={(value: number) => new Intl.NumberFormat('tr-TR').format(value)}
+              />
+              <Legend wrapperStyle={{ paddingTop: '20px' }} />
+              {area.metrics.map((m, i) => (
+                <Bar key={m.columnName} dataKey={m.columnName} name={m.label || m.columnName} fill={COLORS[i % COLORS.length]} radius={[4, 4, 0, 0]} />
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {area.chartType === 'LINE' && (
+        <div className="h-[400px] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <RechartsLineChart data={aggregatedData} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+              <XAxis dataKey="_displayKey" angle={-45} textAnchor="end" height={80} tick={{fontSize: 12, fill: '#64748b'}} />
+              <YAxis tick={{fontSize: 12, fill: '#64748b'}} />
+              <Tooltip 
+                contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                formatter={(value: number) => new Intl.NumberFormat('tr-TR').format(value)}
+              />
+              <Legend wrapperStyle={{ paddingTop: '20px' }} />
+              {area.metrics.map((m, i) => (
+                <Line key={m.columnName} type="monotone" dataKey={m.columnName} name={m.label || m.columnName} stroke={COLORS[i % COLORS.length]} strokeWidth={3} activeDot={{ r: 8 }} />
+              ))}
+            </RechartsLineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {area.chartType === 'PIE' && (
+        <div className="h-[400px] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <RechartsPieChart>
+              <Tooltip 
+                contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                formatter={(value: number) => new Intl.NumberFormat('tr-TR').format(value)}
+              />
+              <Legend />
+              {area.metrics.map((m, i) => (
+                <Pie
+                  key={m.columnName}
+                  data={aggregatedData}
+                  dataKey={m.columnName}
+                  nameKey="_displayKey"
+                  cx="50%"
+                  cy="50%"
+                  outerRadius={120}
+                  innerRadius={i > 0 ? 130 + (i * 20) : 0}
+                  fill={COLORS[i % COLORS.length]}
+                  label={i === 0 ? { fill: '#475569', fontSize: 12 } : undefined}
+                >
+                  {aggregatedData.map((entry: any, index: number) => (
+                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                  ))}
+                </Pie>
+              ))}
+            </RechartsPieChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {area.chartType === 'HORIZONTAL_BAR' && (
+        <div className="h-[400px] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={aggregatedData} layout="vertical" margin={{ top: 20, right: 30, left: 100, bottom: 20 }}>
+              <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0" />
+              <XAxis type="number" tick={{fontSize: 12, fill: '#64748b'}} />
+              <YAxis dataKey="_displayKey" type="category" tick={{fontSize: 12, fill: '#64748b'}} width={90} />
+              <Tooltip 
+                contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                formatter={(value: number) => new Intl.NumberFormat('tr-TR').format(value)}
+              />
+              <Legend wrapperStyle={{ paddingTop: '20px' }} />
+              {area.metrics.map((m, i) => (
+                <Bar key={m.columnName} dataKey={m.columnName} name={m.label || m.columnName} fill={COLORS[i % COLORS.length]} radius={[0, 4, 4, 0]} />
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {area.chartType === 'MATRIX' && (
+        <div className="overflow-x-auto border border-slate-200 rounded-lg">
+          <table className="min-w-full divide-y divide-slate-200">
+            <thead className="bg-slate-50 print:bg-slate-100">
+              <tr>
+                {area.dimensions.map((dim, i) => (
+                  <th key={`th-dim-${i}`} className="px-4 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider border-r border-slate-200">
+                    {dim.label}
+                  </th>
+                ))}
+                {/* Sütun Başlıkları (Dinamik) */}
+                {Array.from(new Set(rawData.map(row => {
+                  return (area.columns || []).map(c => {
+                    const colDef = query?.column_definitions?.find(ac => ac.name === c.columnName);
+                    return formatForDisplay(row[c.columnName], colDef?.type);
+                  }).join(' | ');
+                }))).filter(Boolean).map((colKey, i) => (
+                  <th key={`th-col-${i}`} className="px-4 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider border-b border-slate-200" colSpan={area.metrics.length}>
+                    {colKey}
+                  </th>
+                ))}
+              </tr>
+              <tr>
+                {area.dimensions.map((_, i) => <th key={`th-empty-${i}`} className="border-r border-slate-200"></th>)}
+                {Array.from(new Set(rawData.map(row => {
+                  return (area.columns || []).map(c => {
+                    const colDef = query?.column_definitions?.find(ac => ac.name === c.columnName);
+                    return formatForDisplay(row[c.columnName], colDef?.type);
+                  }).join(' | ');
+                }))).filter(Boolean).map((colKey, colIdx) => (
+                  area.metrics.map((metric, j) => (
+                    <th key={`th-met-${colIdx}-${j}`} className="px-4 py-2 text-right text-[10px] font-medium text-slate-500 uppercase tracking-wider bg-slate-50/50">
+                      {metric.label}
+                    </th>
+                  ))
+                ))}
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-slate-100">
+              {aggregatedData.map((row: any, i: number) => (
+                <tr key={i} className="hover:bg-slate-50">
+                  {area.dimensions.map((dim, j) => {
+                    const colDef = query?.column_definitions?.find(c => c.name === dim.columnName);
+                    return (
+                      <td key={`td-dim-${i}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-700 font-medium border-r border-slate-100">
+                        {formatForDisplay(row[dim.columnName], colDef?.type)}
+                      </td>
+                    );
+                  })}
+                  {Array.from(new Set(rawData.map(r => (area.columns || []).map(c => formatForDisplay(r[c.columnName], query?.column_definitions?.find(ac => ac.name === c.columnName)?.type)).join(' | ')))).filter(Boolean).map((colKey, colIdx) => (
+                     area.metrics.map((metric, j) => (
+                      <td key={`td-met-${i}-${colIdx}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-600 text-right font-mono">
+                        {formatForDisplay(row[metric.columnName], 'number')}
+                      </td>
+                    ))
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+};
 
 export const ReportViewer = ({ hotels }: { hotels: Hotel[] }) => {
   const [reports, setReports] = useState<ReportDefinition[]>([]);
@@ -75,6 +385,64 @@ export const ReportViewer = ({ hotels }: { hotels: Hotel[] }) => {
     });
     return Array.from(paramsMap.values());
   }, [selectedReport, queries]);
+
+  // Initialize parameters when a new report is selected
+  useEffect(() => {
+    const report = reports.find(r => r.id === selectedReportId);
+    if (report) {
+      const initialParams: Record<string, string> = {};
+      report.areas.forEach(area => {
+        if (area.parameters) {
+          Object.entries(area.parameters).forEach(([key, value]) => {
+            initialParams[key] = value as string;
+          });
+        }
+      });
+      setParameters(initialParams);
+    } else {
+      setParameters({});
+    }
+  }, [selectedReportId, reports]);
+
+  const [savingParams, setSavingParams] = useState(false);
+
+  const handleSaveParameters = async () => {
+    if (!selectedReport) return;
+    setSavingParams(true);
+    setError(null);
+    try {
+      const updatedAreas = selectedReport.areas.map(area => {
+        const query = queries.find(q => q.id === area.queryId);
+        if (!query || !query.payload_template) return area;
+        
+        const regex = /\{\{(.*?)\}\}/g;
+        const matches = [...query.payload_template.matchAll(regex)].map(m => m[1]);
+        const areaParams: Record<string, string> = { ...(area.parameters || {}) };
+        
+        matches.forEach(v => {
+          if (v !== 'HOTEL_ID' && v !== 'API_OBJECT' && parameters[v] !== undefined) {
+            areaParams[v] = parameters[v];
+          }
+        });
+        
+        return { ...area, parameters: areaParams };
+      });
+
+      const reportRef = doc(db, 'report_definitions', selectedReport.id);
+      await updateDoc(reportRef, {
+        areas: updatedAreas,
+        updatedAt: new Date()
+      });
+      
+      setReports(prev => prev.map(r => r.id === selectedReport.id ? { ...r, areas: updatedAreas } : r));
+      alert("Parametreler başarıyla kaydedildi.");
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, 'report_definitions');
+      setError('Parametreler kaydedilirken bir hata oluştu.');
+    } finally {
+      setSavingParams(false);
+    }
+  };
 
   const handleFetchData = async () => {
     if (!selectedReport || !selectedHotelCode) return;
@@ -278,97 +646,128 @@ export const ReportViewer = ({ hotels }: { hotels: Hotel[] }) => {
 
       {/* Rapor Seçimi ve Parametreler */}
       <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 print:hidden">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 items-end">
-          <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1.5">Rapor Seçin</label>
-            <select
-              value={selectedReportId}
-              onChange={(e) => {
-                setSelectedReportId(e.target.value);
-                setReportData({});
-              }}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-            >
-              <option value="">Rapor Seçiniz...</option>
-              {reports.map(r => (
-                <option key={r.id} value={r.id}>{r.name}</option>
-              ))}
-            </select>
-          </div>
-
-          {selectedReport && (
+        <div className="flex flex-col md:flex-row gap-8">
+          {/* Sol Taraf: Seçimler */}
+          <div className="w-full md:w-1/3 space-y-5 md:border-r border-slate-100 md:pr-8">
             <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1.5">Otel Seçin</label>
+              <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-2">Rapor Seçin</label>
               <select
-                value={selectedHotelCode}
-                onChange={(e) => setSelectedHotelCode(e.target.value)}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                value={selectedReportId}
+                onChange={(e) => {
+                  setSelectedReportId(e.target.value);
+                  setReportData({});
+                }}
+                className="w-full px-3 py-2.5 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-slate-50 hover:bg-white transition-colors"
               >
-                {hotels.map(h => (
-                  <option key={h.id} value={h.hotel_code}>{h.name}</option>
+                <option value="">Rapor Seçiniz...</option>
+                {reports.map(r => (
+                  <option key={r.id} value={r.id}>{r.name}</option>
                 ))}
               </select>
             </div>
-          )}
 
-          {requiredParameters.map(param => {
-            const currentValue = parameters[param.name] || '';
-            const isDynamicDate = param.type === 'date' && currentValue.startsWith('{{');
-            
-            return (
-              <div key={param.name}>
-                <label className="block text-xs font-medium text-slate-600 mb-1.5">{param.label}</label>
-                {param.type === 'date' ? (
-                  <div className="space-y-2">
-                    <select
-                      value={isDynamicDate ? currentValue : (currentValue ? 'custom' : '')}
-                      onChange={(e) => {
-                        if (e.target.value === 'custom') {
-                          setParameters(prev => ({ ...prev, [param.name]: new Date().toISOString().split('T')[0] }));
-                        } else {
-                          setParameters(prev => ({ ...prev, [param.name]: e.target.value }));
-                        }
-                      }}
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                    >
-                      <option value="">Seçiniz...</option>
-                      {DYNAMIC_DATE_OPTIONS.map(opt => (
-                        <option key={opt.value} value={opt.value}>{opt.label}</option>
-                      ))}
-                    </select>
-                    {(!isDynamicDate && currentValue) && (
-                      <input
-                        type="date"
-                        value={currentValue}
-                        onChange={(e) => setParameters(prev => ({ ...prev, [param.name]: e.target.value }))}
-                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                      />
-                    )}
-                  </div>
-                ) : (
-                  <input
-                    type={param.type === 'number' ? 'number' : 'text'}
-                    value={currentValue}
-                    onChange={(e) => setParameters(prev => ({ ...prev, [param.name]: e.target.value }))}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                  />
-                )}
+            {selectedReport && (
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-2">Otel Seçin</label>
+                <select
+                  value={selectedHotelCode}
+                  onChange={(e) => setSelectedHotelCode(e.target.value)}
+                  className="w-full px-3 py-2.5 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-slate-50 hover:bg-white transition-colors"
+                >
+                  {hotels.map(h => (
+                    <option key={h.id} value={h.hotel_code}>{h.name}</option>
+                  ))}
+                </select>
               </div>
-            );
-          })}
+            )}
+          </div>
 
-          {selectedReport && (
-            <div>
-              <button
-                onClick={handleFetchData}
-                disabled={fetchingData}
-                className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50 font-medium"
-              >
-                {fetchingData ? <Loader2 size={18} className="animate-spin" /> : <Play size={18} />}
-                Raporu Oluştur
-              </button>
-            </div>
-          )}
+          {/* Sağ Taraf: Parametreler ve Aksiyonlar */}
+          <div className="w-full md:w-2/3 flex flex-col">
+            {selectedReport ? (
+              <>
+                <div className="mb-4">
+                  <h3 className="text-sm font-semibold text-slate-800 mb-4">Rapor Parametreleri</h3>
+                  {requiredParameters.length > 0 ? (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+                      {requiredParameters.map(param => {
+                        const currentValue = parameters[param.name] || '';
+                        const isDynamicDate = param.type === 'date' && currentValue.startsWith('{{');
+                        
+                        return (
+                          <div key={param.name}>
+                            <label className="block text-xs font-medium text-slate-600 mb-1.5">{param.label}</label>
+                            {param.type === 'date' ? (
+                              <div className="space-y-2">
+                                <select
+                                  value={isDynamicDate ? currentValue : (currentValue ? 'custom' : '')}
+                                  onChange={(e) => {
+                                    if (e.target.value === 'custom') {
+                                      setParameters(prev => ({ ...prev, [param.name]: new Date().toISOString().split('T')[0] }));
+                                    } else {
+                                      setParameters(prev => ({ ...prev, [param.name]: e.target.value }));
+                                    }
+                                  }}
+                                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                                >
+                                  <option value="">Seçiniz...</option>
+                                  {DYNAMIC_DATE_OPTIONS.map(opt => (
+                                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                  ))}
+                                </select>
+                                {(!isDynamicDate && currentValue) && (
+                                  <input
+                                    type="date"
+                                    value={currentValue}
+                                    onChange={(e) => setParameters(prev => ({ ...prev, [param.name]: e.target.value }))}
+                                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                                  />
+                                )}
+                              </div>
+                            ) : (
+                              <input
+                                type={param.type === 'number' ? 'number' : 'text'}
+                                value={currentValue}
+                                onChange={(e) => setParameters(prev => ({ ...prev, [param.name]: e.target.value }))}
+                                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                              />
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="text-sm text-slate-500 italic bg-slate-50 p-4 rounded-xl border border-slate-100">
+                      Bu rapor için ayarlanabilir parametre bulunmuyor.
+                    </div>
+                  )}
+                </div>
+                
+                <div className="flex flex-wrap items-center justify-end gap-3 mt-auto pt-6 border-t border-slate-100">
+                  <button
+                    onClick={handleSaveParameters}
+                    disabled={savingParams}
+                    className="flex items-center gap-2 px-4 py-2.5 bg-slate-100 text-slate-700 rounded-xl hover:bg-slate-200 transition-colors font-medium text-sm disabled:opacity-50"
+                  >
+                    {savingParams ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />}
+                    Parametreleri Kaydet
+                  </button>
+                  <button
+                    onClick={handleFetchData}
+                    disabled={fetchingData}
+                    className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-colors shadow-sm font-medium text-sm disabled:opacity-50"
+                  >
+                    {fetchingData ? <Loader2 size={18} className="animate-spin" /> : <Play size={18} />}
+                    Raporu Oluştur
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="h-full flex items-center justify-center text-slate-400 text-sm bg-slate-50 rounded-xl border border-slate-100 border-dashed min-h-[150px]">
+                Lütfen görüntülemek için sol taraftan bir rapor seçin.
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -388,7 +787,6 @@ export const ReportViewer = ({ hotels }: { hotels: Hotel[] }) => {
 
           {selectedReport.areas.map((area, index) => {
             const rawData = reportData[area.id] || [];
-            const aggregatedData = aggregateData(area, rawData);
 
             return (
               <div key={area.id} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 print:shadow-none print:border-none print:p-0 break-inside-avoid">
@@ -396,210 +794,7 @@ export const ReportViewer = ({ hotels }: { hotels: Hotel[] }) => {
                   <h3 className="text-xl font-bold text-slate-800">{area.title || `Bölüm ${index + 1}`}</h3>
                   {area.subtitle && <p className="text-slate-500 mt-1">{area.subtitle}</p>}
                 </div>
-
-                {!aggregatedData.length ? (
-                  <div className="p-8 text-center text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
-                    Bu bölüm için veri bulunamadı.
-                  </div>
-                ) : (
-                  <div className="w-full">
-                    {area.chartType === 'TABLE' && (
-                      <div className="overflow-x-auto">
-                        <table className="min-w-full divide-y divide-slate-200">
-                          <thead className="bg-slate-50 print:bg-slate-100">
-                            <tr>
-                              {area.dimensions.map((dim, i) => (
-                                <th key={`th-dim-${i}`} className="px-4 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">
-                                  {dim.label}
-                                </th>
-                              ))}
-                              {area.metrics.map((metric, i) => (
-                                <th key={`th-met-${i}`} className="px-4 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider">
-                                  {metric.label}
-                                </th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody className="bg-white divide-y divide-slate-100">
-                            {aggregatedData.map((row: any, i: number) => (
-                              <tr key={i} className="hover:bg-slate-50">
-                                {area.dimensions.map((dim, j) => {
-                                  const query = queries.find(q => q.id === area.queryId);
-                                  const colDef = query?.column_definitions?.find(c => c.name === dim.columnName);
-                                  return (
-                                    <td key={`td-dim-${i}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-700 font-medium">
-                                      {formatForDisplay(row[dim.columnName], colDef?.type)}
-                                    </td>
-                                  );
-                                })}
-                                {area.metrics.map((metric, j) => (
-                                  <td key={`td-met-${i}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-600 text-right font-mono">
-                                    {formatForDisplay(row[metric.columnName], 'number')}
-                                  </td>
-                                ))}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-
-                    {area.chartType === 'BAR' && (
-                      <div className="h-[400px] w-full">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <BarChart data={aggregatedData} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
-                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                            <XAxis dataKey="_displayKey" angle={-45} textAnchor="end" height={80} tick={{fontSize: 12, fill: '#64748b'}} />
-                            <YAxis tick={{fontSize: 12, fill: '#64748b'}} />
-                            <Tooltip 
-                              contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                              formatter={(value: number) => new Intl.NumberFormat('tr-TR').format(value)}
-                            />
-                            <Legend wrapperStyle={{ paddingTop: '20px' }} />
-                            {area.metrics.map((m, i) => (
-                              <Bar key={m.columnName} dataKey={m.columnName} name={m.label || m.columnName} fill={COLORS[i % COLORS.length]} radius={[4, 4, 0, 0]} />
-                            ))}
-                          </BarChart>
-                        </ResponsiveContainer>
-                      </div>
-                    )}
-
-                    {area.chartType === 'LINE' && (
-                      <div className="h-[400px] w-full">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <RechartsLineChart data={aggregatedData} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
-                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                            <XAxis dataKey="_displayKey" angle={-45} textAnchor="end" height={80} tick={{fontSize: 12, fill: '#64748b'}} />
-                            <YAxis tick={{fontSize: 12, fill: '#64748b'}} />
-                            <Tooltip 
-                              contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                              formatter={(value: number) => new Intl.NumberFormat('tr-TR').format(value)}
-                            />
-                            <Legend wrapperStyle={{ paddingTop: '20px' }} />
-                            {area.metrics.map((m, i) => (
-                              <Line key={m.columnName} type="monotone" dataKey={m.columnName} name={m.label || m.columnName} stroke={COLORS[i % COLORS.length]} strokeWidth={3} activeDot={{ r: 8 }} />
-                            ))}
-                          </RechartsLineChart>
-                        </ResponsiveContainer>
-                      </div>
-                    )}
-
-                    {area.chartType === 'PIE' && (
-                      <div className="h-[400px] w-full">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <RechartsPieChart>
-                            <Tooltip 
-                              contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                              formatter={(value: number) => new Intl.NumberFormat('tr-TR').format(value)}
-                            />
-                            <Legend />
-                            {area.metrics.map((m, i) => (
-                              <Pie
-                                key={m.columnName}
-                                data={aggregatedData}
-                                dataKey={m.columnName}
-                                nameKey="_displayKey"
-                                cx="50%"
-                                cy="50%"
-                                outerRadius={120}
-                                innerRadius={i > 0 ? 130 + (i * 20) : 0}
-                                fill={COLORS[i % COLORS.length]}
-                                label={i === 0 ? { fill: '#475569', fontSize: 12 } : undefined}
-                              >
-                                {aggregatedData.map((entry: any, index: number) => (
-                                  <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                                ))}
-                              </Pie>
-                            ))}
-                          </RechartsPieChart>
-                        </ResponsiveContainer>
-                      </div>
-                    )}
-
-                    {area.chartType === 'HORIZONTAL_BAR' && (
-                      <div className="h-[400px] w-full">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <BarChart data={aggregatedData} layout="vertical" margin={{ top: 20, right: 30, left: 100, bottom: 20 }}>
-                            <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0" />
-                            <XAxis type="number" tick={{fontSize: 12, fill: '#64748b'}} />
-                            <YAxis dataKey="_displayKey" type="category" tick={{fontSize: 12, fill: '#64748b'}} width={90} />
-                            <Tooltip 
-                              contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                              formatter={(value: number) => new Intl.NumberFormat('tr-TR').format(value)}
-                            />
-                            <Legend wrapperStyle={{ paddingTop: '20px' }} />
-                            {area.metrics.map((m, i) => (
-                              <Bar key={m.columnName} dataKey={m.columnName} name={m.label || m.columnName} fill={COLORS[i % COLORS.length]} radius={[0, 4, 4, 0]} />
-                            ))}
-                          </BarChart>
-                        </ResponsiveContainer>
-                      </div>
-                    )}
-
-                    {area.chartType === 'MATRIX' && (
-                      <div className="overflow-x-auto border border-slate-200 rounded-lg">
-                        <table className="min-w-full divide-y divide-slate-200">
-                          <thead className="bg-slate-50 print:bg-slate-100">
-                            <tr>
-                              {area.dimensions.map((dim, i) => (
-                                <th key={`th-dim-${i}`} className="px-4 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider border-r border-slate-200">
-                                  {dim.label}
-                                </th>
-                              ))}
-                              {/* Sütun Başlıkları (Dinamik) */}
-                              {Array.from(new Set(areaData.map(row => {
-                                return (area.columns || []).map(c => {
-                                  const colDef = query?.column_definitions?.find(ac => ac.name === c.columnName);
-                                  return formatForDisplay(row[c.columnName], colDef?.type);
-                                }).join(' | ');
-                              }))).filter(Boolean).map((colKey, i) => (
-                                <th key={`th-col-${i}`} className="px-4 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider border-b border-slate-200" colSpan={area.metrics.length}>
-                                  {colKey}
-                                </th>
-                              ))}
-                            </tr>
-                            <tr>
-                              {area.dimensions.map((_, i) => <th key={`th-empty-${i}`} className="border-r border-slate-200"></th>)}
-                              {Array.from(new Set(areaData.map(row => {
-                                return (area.columns || []).map(c => {
-                                  const colDef = query?.column_definitions?.find(ac => ac.name === c.columnName);
-                                  return formatForDisplay(row[c.columnName], colDef?.type);
-                                }).join(' | ');
-                              }))).filter(Boolean).map((colKey, colIdx) => (
-                                area.metrics.map((metric, j) => (
-                                  <th key={`th-met-${colIdx}-${j}`} className="px-4 py-2 text-right text-[10px] font-medium text-slate-500 uppercase tracking-wider bg-slate-50/50">
-                                    {metric.label}
-                                  </th>
-                                ))
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody className="bg-white divide-y divide-slate-100">
-                            {aggregatedData.map((row, i) => (
-                              <tr key={i} className="hover:bg-slate-50">
-                                {area.dimensions.map((dim, j) => {
-                                  const colDef = query?.column_definitions?.find(c => c.name === dim.columnName);
-                                  return (
-                                    <td key={`td-dim-${i}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-700 font-medium border-r border-slate-100">
-                                      {formatForDisplay(row[dim.columnName], colDef?.type)}
-                                    </td>
-                                  );
-                                })}
-                                {Array.from(new Set(areaData.map(r => (area.columns || []).map(c => formatForDisplay(r[c.columnName], query?.column_definitions?.find(ac => ac.name === c.columnName)?.type)).join(' | ')))).filter(Boolean).map((colKey, colIdx) => (
-                                   area.metrics.map((metric, j) => (
-                                    <td key={`td-met-${i}-${colIdx}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-600 text-right font-mono">
-                                      {formatForDisplay(row[metric.columnName], 'number')}
-                                    </td>
-                                  ))
-                                ))}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </div>
-                )}
+                <ReportAreaView area={area} rawData={rawData} queries={queries} />
               </div>
             );
           })}

@@ -3,7 +3,205 @@ import { db } from '../firebase';
 import { collection, query, onSnapshot, where, addDoc, serverTimestamp, deleteDoc, doc, updateDoc } from 'firebase/firestore';
 import { QueryTemplate, Hotel, OperationType, ReportView, ColumnDefinition } from '../types';
 import { handleFirestoreError } from '../utils/errorHandling';
-import { TrendingUp, Loader2, Building2, Filter, Database, Table as TableIcon, Save, Columns, Check, Trash2, X, ChevronDown } from 'lucide-react';
+import { TrendingUp, Loader2, Building2, Filter, Database, Table as TableIcon, Save, Columns, Check, Trash2, X, ChevronDown, ArrowUp, ArrowDown } from 'lucide-react';
+import { useSortableData } from '../hooks/useSortableData';
+
+const QueryResultTable = React.memo(({ 
+  queryName, 
+  rawData, 
+  queryDef, 
+  allCols, 
+  colsToRender, 
+  openColumnMenu, 
+  setOpenColumnMenu, 
+  handleToggleColumn 
+}: { 
+  queryName: string;
+  rawData: any[];
+  queryDef?: QueryTemplate;
+  allCols: string[];
+  colsToRender: string[];
+  openColumnMenu: string | null;
+  setOpenColumnMenu: (name: string | null) => void;
+  handleToggleColumn: (queryName: string, col: string) => void;
+}) => {
+  const data = Array.isArray(rawData) ? rawData : [];
+  const isError = data.length === 1 && data[0].error;
+
+  const { items: sortedData, requestSort, sortConfig } = useSortableData(data);
+
+  const SortIcon = ({ columnKey }: { columnKey: string }) => {
+    if (sortConfig?.key !== columnKey) {
+      return <ArrowUp className="w-3 h-3 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity inline-block ml-1" />;
+    }
+    return sortConfig.direction === 'asc' ? (
+      <ArrowUp className="w-3 h-3 text-indigo-600 inline-block ml-1" />
+    ) : (
+      <ArrowDown className="w-3 h-3 text-indigo-600 inline-block ml-1" />
+    );
+  };
+
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
+      <div className="p-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-white rounded-lg shadow-sm border border-slate-200">
+            <TableIcon size={18} className="text-indigo-600" />
+          </div>
+          <h3 className="text-base font-semibold text-slate-800">{queryName}</h3>
+          {!isError && (
+            <span className="ml-2 text-xs font-medium bg-slate-200 text-slate-700 px-2.5 py-1 rounded-full">
+              {data.length} Satır
+            </span>
+          )}
+        </div>
+        
+        {!isError && allCols.length > 0 && (
+          <div className="relative">
+            <button 
+              onClick={(e) => {
+                e.stopPropagation();
+                setOpenColumnMenu(openColumnMenu === queryName ? null : queryName);
+              }}
+              className="flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+            >
+              <Columns size={16} className="text-slate-500" />
+              Sütunlar
+            </button>
+            
+            {openColumnMenu === queryName && (
+              <div 
+                className="absolute right-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-slate-200 z-10 overflow-hidden"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="p-3 border-b border-slate-100 bg-slate-50">
+                  <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Gösterilecek Sütunlar</h4>
+                </div>
+                <div className="max-h-64 overflow-y-auto p-2">
+                  {allCols.map(col => {
+                    const isVisible = colsToRender.includes(col);
+                    const colDef = queryDef?.column_definitions?.find(cd => cd.name === col);
+                    const label = colDef?.label || col;
+                    
+                    return (
+                      <label key={col} className="flex items-center gap-3 p-2 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors">
+                        <div className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${isVisible ? 'bg-indigo-600 border-indigo-600' : 'border-slate-300 bg-white'}`}>
+                          {isVisible && <Check size={14} className="text-white" />}
+                        </div>
+                        <input 
+                          type="checkbox" 
+                          className="hidden"
+                          checked={isVisible}
+                          onChange={() => handleToggleColumn(queryName, col)}
+                        />
+                        <span className="text-sm text-slate-700 truncate">{label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="p-0 overflow-x-auto max-h-[500px]">
+        {isError ? (
+          <div className="p-6 text-rose-600 text-sm font-medium bg-rose-50">
+            Hata: {data[0].error}
+          </div>
+        ) : data.length > 0 ? (
+          <table className="min-w-full divide-y divide-slate-200">
+            <thead className="bg-white sticky top-0 shadow-sm z-0">
+              <tr>
+                {colsToRender.map((col, i) => {
+                  const colDef = queryDef?.column_definitions?.find(cd => cd.name === col);
+                  const label = colDef?.label || col;
+                  const isNumber = colDef?.type === 'number';
+                  const isDate = colDef?.type === 'date';
+                  
+                  return (
+                    <th 
+                      key={i} 
+                      scope="col" 
+                      className={`px-6 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap cursor-pointer group hover:bg-slate-50 transition-colors ${isNumber ? 'text-right' : isDate ? 'text-center' : 'text-left'}`}
+                      onClick={() => requestSort(col)}
+                    >
+                      <div className={`flex items-center ${isNumber ? 'justify-end' : isDate ? 'justify-center' : 'justify-start'}`}>
+                        {label}
+                        <SortIcon columnKey={col} />
+                      </div>
+                    </th>
+                  );
+                })}
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-slate-100">
+              {sortedData.slice(0, 50).map((row, rowIndex) => (
+                <tr key={rowIndex} className="hover:bg-slate-50 transition-colors">
+                  {colsToRender.map((col, colIndex) => {
+                    const cellValue = typeof row === 'object' && row !== null ? row[col] : row;
+                    const colDef = queryDef?.column_definitions?.find(cd => cd.name === col);
+                    const isNumber = colDef?.type === 'number';
+                    const isDate = colDef?.type === 'date';
+                    
+                    let displayValue = typeof cellValue === 'object' ? JSON.stringify(cellValue) : String(cellValue ?? '-');
+                    
+                    // Sayı formatlama
+                    if (isNumber && typeof cellValue === 'number') {
+                      displayValue = new Intl.NumberFormat('tr-TR').format(cellValue);
+                    }
+                    
+                    // Tarih formatlama
+                    if (isDate && cellValue) {
+                      try {
+                        const date = new Date(cellValue);
+                        if (!isNaN(date.getTime())) {
+                          displayValue = new Intl.DateTimeFormat('tr-TR', {
+                            day: '2-digit',
+                            month: '2-digit',
+                            year: 'numeric'
+                          }).format(date);
+                        }
+                      } catch (e) {
+                        // Fallback
+                      }
+                      
+                      if (displayValue === String(cellValue)) {
+                        const str = String(cellValue);
+                        const match = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+                        if (match) {
+                          displayValue = `${match[3]}.${match[2]}.${match[1]}`;
+                        }
+                      }
+                    }
+
+                    return (
+                      <td key={colIndex} className={`px-6 py-3 whitespace-nowrap text-sm text-slate-600 ${isNumber ? 'text-right font-mono' : isDate ? 'text-center' : 'text-left'}`}>
+                        <div className="max-w-xs truncate" title={displayValue}>
+                          {displayValue}
+                        </div>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <div className="p-8 text-center text-slate-500 text-sm">
+            Bu veri seti için kayıt bulunamadı.
+          </div>
+        )}
+      </div>
+      {!isError && data.length > 50 && (
+        <div className="p-3 bg-slate-50 border-t border-slate-200 text-center text-xs text-slate-500 font-medium">
+          Sadece ilk 50 kayıt gösterilmektedir.
+        </div>
+      )}
+    </div>
+  );
+});
 
 export const ReportDashboard = ({ hotels }: { hotels: Hotel[] }) => {
   const [selectedHotel, setSelectedHotel] = useState<string>(hotels[0]?.hotel_code || '');
@@ -429,163 +627,22 @@ export const ReportDashboard = ({ hotels }: { hotels: Hotel[] }) => {
 
           <div className="grid grid-cols-1 gap-6">
             {Object.entries(queryResults).map(([queryName, rawData], index) => {
-              const data = Array.isArray(rawData) ? rawData : [];
-              const isError = data.length === 1 && data[0].error;
               const queryDef = queries.find(q => q.query_name === queryName);
               const allCols = availableColumns[queryName] || [];
               const colsToRender = visibleColumns[queryName] || allCols;
 
               return (
-                <div key={index} className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
-                  <div className="p-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 bg-white rounded-lg shadow-sm border border-slate-200">
-                        <TableIcon size={18} className="text-indigo-600" />
-                      </div>
-                      <h3 className="text-base font-semibold text-slate-800">{queryName}</h3>
-                      {!isError && (
-                        <span className="ml-2 text-xs font-medium bg-slate-200 text-slate-700 px-2.5 py-1 rounded-full">
-                          {data.length} Satır
-                        </span>
-                      )}
-                    </div>
-                    
-                    {!isError && allCols.length > 0 && (
-                      <div className="relative">
-                        <button 
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setOpenColumnMenu(openColumnMenu === queryName ? null : queryName);
-                          }}
-                          className="flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
-                        >
-                          <Columns size={16} className="text-slate-500" />
-                          Sütunlar
-                        </button>
-                        
-                        {openColumnMenu === queryName && (
-                          <div 
-                            className="absolute right-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-slate-200 z-10 overflow-hidden"
-                            onClick={e => e.stopPropagation()}
-                          >
-                            <div className="p-3 border-b border-slate-100 bg-slate-50">
-                              <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Gösterilecek Sütunlar</h4>
-                            </div>
-                            <div className="max-h-64 overflow-y-auto p-2">
-                              {allCols.map(col => {
-                                const isVisible = colsToRender.includes(col);
-                                const colDef = queryDef?.column_definitions?.find(cd => cd.name === col);
-                                const label = colDef?.label || col;
-                                
-                                return (
-                                  <label key={col} className="flex items-center gap-3 p-2 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors">
-                                    <div className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${isVisible ? 'bg-indigo-600 border-indigo-600' : 'border-slate-300 bg-white'}`}>
-                                      {isVisible && <Check size={14} className="text-white" />}
-                                    </div>
-                                    <input 
-                                      type="checkbox" 
-                                      className="hidden"
-                                      checked={isVisible}
-                                      onChange={() => handleToggleColumn(queryName, col)}
-                                    />
-                                    <span className="text-sm text-slate-700 truncate">{label}</span>
-                                  </label>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="p-0 overflow-x-auto max-h-[500px]">
-                    {isError ? (
-                      <div className="p-6 text-rose-600 text-sm font-medium bg-rose-50">
-                        Hata: {data[0].error}
-                      </div>
-                    ) : data.length > 0 ? (
-                      <table className="min-w-full divide-y divide-slate-200">
-                        <thead className="bg-white sticky top-0 shadow-sm z-0">
-                          <tr>
-                            {colsToRender.map((col, i) => {
-                              const colDef = queryDef?.column_definitions?.find(cd => cd.name === col);
-                              const label = colDef?.label || col;
-                              const isNumber = colDef?.type === 'number';
-                              const isDate = colDef?.type === 'date';
-                              
-                              return (
-                                <th key={i} scope="col" className={`px-6 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap ${isNumber ? 'text-right' : isDate ? 'text-center' : 'text-left'}`}>
-                                  {label}
-                                </th>
-                              );
-                            })}
-                          </tr>
-                        </thead>
-                        <tbody className="bg-white divide-y divide-slate-100">
-                          {data.slice(0, 50).map((row, rowIndex) => (
-                            <tr key={rowIndex} className="hover:bg-slate-50 transition-colors">
-                              {colsToRender.map((col, colIndex) => {
-                                const cellValue = typeof row === 'object' && row !== null ? row[col] : row;
-                                const colDef = queryDef?.column_definitions?.find(cd => cd.name === col);
-                                const isNumber = colDef?.type === 'number';
-                                const isDate = colDef?.type === 'date';
-                                
-                                let displayValue = typeof cellValue === 'object' ? JSON.stringify(cellValue) : String(cellValue ?? '-');
-                                
-                                // Sayı formatlama
-                                if (isNumber && typeof cellValue === 'number') {
-                                  displayValue = new Intl.NumberFormat('tr-TR').format(cellValue);
-                                }
-                                
-                                // Tarih formatlama
-                                if (isDate && cellValue) {
-                                  try {
-                                    const date = new Date(cellValue);
-                                    if (!isNaN(date.getTime())) {
-                                      displayValue = new Intl.DateTimeFormat('tr-TR', {
-                                        day: '2-digit',
-                                        month: '2-digit',
-                                        year: 'numeric'
-                                      }).format(date);
-                                    }
-                                  } catch (e) {
-                                    // Fallback
-                                  }
-                                  
-                                  if (displayValue === String(cellValue)) {
-                                    const str = String(cellValue);
-                                    const match = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
-                                    if (match) {
-                                      displayValue = `${match[3]}.${match[2]}.${match[1]}`;
-                                    }
-                                  }
-                                }
-
-                                return (
-                                  <td key={colIndex} className={`px-6 py-3 whitespace-nowrap text-sm text-slate-600 ${isNumber ? 'text-right font-mono' : isDate ? 'text-center' : 'text-left'}`}>
-                                    <div className="max-w-xs truncate" title={displayValue}>
-                                      {displayValue}
-                                    </div>
-                                  </td>
-                                );
-                              })}
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    ) : (
-                      <div className="p-8 text-center text-slate-500 text-sm">
-                        Bu veri seti için kayıt bulunamadı.
-                      </div>
-                    )}
-                  </div>
-                  {!isError && data.length > 50 && (
-                    <div className="p-3 bg-slate-50 border-t border-slate-200 text-center text-xs text-slate-500 font-medium">
-                      Sadece ilk 50 kayıt gösterilmektedir.
-                    </div>
-                  )}
-                </div>
+                <QueryResultTable 
+                  key={index}
+                  queryName={queryName}
+                  rawData={Array.isArray(rawData) ? rawData : []}
+                  queryDef={queryDef}
+                  allCols={allCols}
+                  colsToRender={colsToRender}
+                  openColumnMenu={openColumnMenu}
+                  setOpenColumnMenu={setOpenColumnMenu as (name: string | null) => void}
+                  handleToggleColumn={handleToggleColumn}
+                />
               );
             })}
           </div>

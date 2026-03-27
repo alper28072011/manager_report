@@ -2,10 +2,11 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { collection, getDocs, doc, addDoc, updateDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
 import { QueryTemplate, Hotel, ReportDefinition, ReportDimension, ReportMetric, AggregationType, ChartType, ReportArea, OperationType } from '../types';
-import { Settings2, Play, Table as TableIcon, BarChart3, LineChart, PieChart, Save, Loader2, GripVertical, Trash2, X, ChevronDown, Plus, LayoutTemplate } from 'lucide-react';
+import { Settings2, Play, Table as TableIcon, BarChart3, LineChart, PieChart, Save, Loader2, GripVertical, Trash2, X, ChevronDown, Plus, LayoutTemplate, ArrowUp, ArrowDown } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart as RechartsLineChart, Line, PieChart as RechartsPieChart, Pie, Cell } from 'recharts';
 import { handleFirestoreError } from '../utils/errorHandling';
 import { resolveDynamicDate, DYNAMIC_DATE_OPTIONS } from '../utils/dateUtils';
+import { useSortableData } from '../hooks/useSortableData';
 
 const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316'];
 
@@ -314,6 +315,8 @@ export const ReportBuilder = () => {
 
     return result;
   }, [previewData, activeArea.dimensions, activeArea.metrics]);
+
+  const { items: sortedData, requestSort, sortConfig } = useSortableData(aggregatedData);
 
   const handleAddDimension = (columnName: string) => {
     if (!activeArea.dimensions.find(d => d.columnName === columnName)) {
@@ -928,19 +931,37 @@ export const ReportBuilder = () => {
                     <thead className="bg-slate-50">
                       <tr>
                         {activeArea.dimensions.map((dim, i) => (
-                          <th key={`th-dim-${i}`} className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                            {dim.label}
+                          <th 
+                            key={`th-dim-${i}`} 
+                            className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider cursor-pointer hover:bg-slate-100 transition-colors"
+                            onClick={() => requestSort(dim.columnName)}
+                          >
+                            <div className="flex items-center gap-1">
+                              {dim.label}
+                              {sortConfig?.key === dim.columnName && (
+                                sortConfig.direction === 'ascending' ? <ArrowUp size={14} /> : <ArrowDown size={14} />
+                              )}
+                            </div>
                           </th>
                         ))}
                         {activeArea.metrics.map((metric, i) => (
-                          <th key={`th-met-${i}`} className="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                            {metric.label} ({metric.aggregation})
+                          <th 
+                            key={`th-met-${i}`} 
+                            className="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider cursor-pointer hover:bg-slate-100 transition-colors"
+                            onClick={() => requestSort(metric.columnName)}
+                          >
+                            <div className="flex items-center justify-end gap-1">
+                              {metric.label} ({metric.aggregation})
+                              {sortConfig?.key === metric.columnName && (
+                                sortConfig.direction === 'ascending' ? <ArrowUp size={14} /> : <ArrowDown size={14} />
+                              )}
+                            </div>
                           </th>
                         ))}
                       </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-slate-100">
-                      {aggregatedData.map((row, i) => (
+                      {sortedData.map((row, i) => (
                         <tr key={i} className="hover:bg-slate-50">
                           {activeArea.dimensions.map((dim, j) => {
                             const colDef = availableColumns.find(c => c.name === dim.columnName);
