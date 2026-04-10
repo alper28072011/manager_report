@@ -86,9 +86,12 @@ export interface Hotel {
 export type AggregationType = 'SUM' | 'AVG' | 'MIN' | 'MAX' | 'COUNT';
 export type ChartType = 'TABLE' | 'BAR' | 'LINE' | 'PIE' | 'MATRIX' | 'HORIZONTAL_BAR';
 
+export type DateGranularity = 'day' | 'week' | 'month' | 'quarter' | 'year' | 'dayOfWeek';
+
 export interface ReportDimension {
   columnName: string;
   label?: string;
+  dateGranularity?: DateGranularity;
 }
 
 export interface ReportMetric {
@@ -107,6 +110,7 @@ export interface ReportArea {
   metrics: ReportMetric[]; // Değerler (Values)
   chartType: ChartType;
   parameters?: Record<string, string>;
+  topN?: number;
 }
 
 export interface ReportDefinition {

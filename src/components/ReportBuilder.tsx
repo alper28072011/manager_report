@@ -7,6 +7,7 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Responsive
 import { handleFirestoreError } from '../utils/errorHandling';
 import { resolveDynamicDate, DYNAMIC_DATE_OPTIONS } from '../utils/dateUtils';
 import { useSortableData } from '../hooks/useSortableData';
+import { formatForDisplay, formatDateByGranularity, formatDateForDisplay } from '../utils/formatUtils';
 
 const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316'];
 
@@ -231,51 +232,36 @@ export const ReportBuilder = () => {
 
   const previewData = previewDataMap[activeAreaId] || [];
 
-  const formatForDisplay = (value: any, type?: string) => {
-    if (value === null || value === undefined) return '-';
-    
-    if (type === 'date') {
-      try {
-        const date = new Date(value);
-        if (!isNaN(date.getTime())) {
-          return new Intl.DateTimeFormat('tr-TR', {
-            day: '2-digit',
-            month: '2-digit',
-            year: 'numeric'
-          }).format(date);
-        }
-      } catch (e) {
-        // Fallback to regex if Date parsing fails
-      }
-      
-      const str = String(value);
-      const match = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
-      if (match) {
-        return `${match[3]}.${match[2]}.${match[1]}`;
-      }
-      return value;
-    }
-    
-    if (type === 'number' || typeof value === 'number') {
-      return new Intl.NumberFormat('tr-TR', { maximumFractionDigits: 2 }).format(Number(value));
-    }
-    
-    return String(value);
-  };
-
   const aggregatedData = useMemo(() => {
     if (!previewData.length || activeArea.dimensions.length === 0 || activeArea.metrics.length === 0) return [];
 
     const grouped = previewData.reduce((acc: any, row: any) => {
       const keyParts = activeArea.dimensions.map(d => {
         const colDef = availableColumns.find(c => c.name === d.columnName);
+        if (colDef?.type === 'date') {
+          return formatDateByGranularity(row[d.columnName], d.dateGranularity);
+        }
         return formatForDisplay(row[d.columnName], colDef?.type);
       });
       const key = keyParts.join(' | ');
       
       if (!acc[key]) {
-        acc[key] = { _displayKey: key, _count: 0 };
-        activeArea.dimensions.forEach(d => acc[key][d.columnName] = row[d.columnName]);
+        acc[key] = { _count: 0 };
+        
+        // Format display key for charts
+        const displayKeyParts = activeArea.dimensions.map((d, idx) => {
+          const colDef = availableColumns.find(c => c.name === d.columnName);
+          if (colDef?.type === 'date') {
+            return formatDateForDisplay(keyParts[idx], d.dateGranularity);
+          }
+          return keyParts[idx];
+        });
+        acc[key]._displayKey = displayKeyParts.join(' | ');
+
+        activeArea.dimensions.forEach((d, idx) => {
+          const colDef = availableColumns.find(c => c.name === d.columnName);
+          acc[key][d.columnName] = colDef?.type === 'date' ? keyParts[idx] : row[d.columnName];
+        });
         activeArea.metrics.forEach(m => {
           acc[key][m.columnName] = m.aggregation === 'MIN' ? Infinity : m.aggregation === 'MAX' ? -Infinity : 0;
         });
@@ -300,6 +286,47 @@ export const ReportBuilder = () => {
             break;
         }
       });
+
+      // Matrix aggregation
+      if (activeArea.chartType === 'MATRIX' && (activeArea.columns || []).length > 0) {
+        const colKeyParts = (activeArea.columns || []).map(c => {
+          const colDef = availableColumns.find(ac => ac.name === c.columnName);
+          if (colDef?.type === 'date') {
+            return formatDateByGranularity(row[c.columnName], c.dateGranularity);
+          }
+          return formatForDisplay(row[c.columnName], colDef?.type);
+        });
+        const colKey = colKeyParts.join(' | ');
+
+        if (!acc[key]._cols) acc[key]._cols = {};
+        if (!acc[key]._cols[colKey]) {
+          acc[key]._cols[colKey] = { _count: 0 };
+          activeArea.metrics.forEach(m => {
+            acc[key]._cols[colKey][m.columnName] = m.aggregation === 'MIN' ? Infinity : m.aggregation === 'MAX' ? -Infinity : 0;
+          });
+        }
+        
+        acc[key]._cols[colKey]._count += 1;
+        activeArea.metrics.forEach(m => {
+          const val = Number(row[m.columnName]) || 0;
+          switch (m.aggregation) {
+            case 'SUM':
+            case 'AVG':
+              acc[key]._cols[colKey][m.columnName] += val;
+              break;
+            case 'MIN':
+              acc[key]._cols[colKey][m.columnName] = Math.min(acc[key]._cols[colKey][m.columnName], val);
+              break;
+            case 'MAX':
+              acc[key]._cols[colKey][m.columnName] = Math.max(acc[key]._cols[colKey][m.columnName], val);
+              break;
+            case 'COUNT':
+              acc[key]._cols[colKey][m.columnName] = acc[key]._cols[colKey]._count;
+              break;
+          }
+        });
+      }
+
       return acc;
     }, {});
 
@@ -311,12 +338,74 @@ export const ReportBuilder = () => {
           row[m.columnName] = row[m.columnName] / row._count;
         }
       });
+      if (row._cols) {
+        Object.values(row._cols).forEach((col: any) => {
+          activeArea.metrics.forEach(m => {
+            if (m.aggregation === 'AVG' && col._count > 0) {
+              col[m.columnName] = col[m.columnName] / col._count;
+            }
+          });
+        });
+      }
     });
 
-    return result;
-  }, [previewData, activeArea.dimensions, activeArea.metrics]);
+    // Default sort by first metric descending if topN is active
+    if (activeArea.topN && activeArea.metrics.length > 0) {
+      const primaryMetric = activeArea.metrics[0].columnName;
+      result.sort((a: any, b: any) => (Number(b[primaryMetric]) || 0) - (Number(a[primaryMetric]) || 0));
+    } else {
+      // Default sort by date dimension ascending
+      const dateDim = activeArea.dimensions.find(d => availableColumns.find(c => c.name === d.columnName)?.type === 'date');
+      if (dateDim) {
+        result.sort((a: any, b: any) => {
+          const aVal = String(a[dateDim.columnName] || '');
+          const bVal = String(b[dateDim.columnName] || '');
+          return aVal.localeCompare(bVal);
+        });
+      }
+    }
 
-  const { items: sortedData, requestSort, sortConfig } = useSortableData(aggregatedData);
+    return result;
+  }, [previewData, activeArea.dimensions, activeArea.metrics, activeArea.topN]);
+
+  const { items: sortedData, requestSort, sortConfig } = useSortableData(aggregatedData, {
+    key: activeArea?.topN ? activeArea.metrics[0]?.columnName : (activeArea?.dimensions.find(d => availableColumns.find(c => c.name === d.columnName)?.type === 'date')?.columnName || activeArea?.dimensions[0]?.columnName || ''),
+    direction: activeArea?.topN ? 'desc' : 'asc'
+  });
+
+  const [showAllTopN, setShowAllTopN] = useState(false);
+
+  const processedData = useMemo(() => {
+    let data = [...sortedData];
+    
+    if (activeArea.topN && activeArea.topN > 0 && !showAllTopN && data.length > activeArea.topN) {
+      const topData = data.slice(0, activeArea.topN);
+      const othersData = data.slice(activeArea.topN);
+      
+      const othersRow: any = { _displayKey: 'Diğer', _isOthers: true };
+      
+      activeArea.dimensions.forEach(d => {
+        othersRow[d.columnName] = 'Diğer';
+      });
+      
+      activeArea.metrics.forEach(m => {
+        if (m.aggregation === 'SUM' || m.aggregation === 'COUNT') {
+          othersRow[m.columnName] = othersData.reduce((sum, row) => sum + (Number(row[m.columnName]) || 0), 0);
+        } else if (m.aggregation === 'AVG') {
+          const total = othersData.reduce((sum, row) => sum + (Number(row[m.columnName]) || 0), 0);
+          othersRow[m.columnName] = total / othersData.length;
+        } else if (m.aggregation === 'MAX') {
+          othersRow[m.columnName] = Math.max(...othersData.map(row => Number(row[m.columnName]) || -Infinity));
+        } else if (m.aggregation === 'MIN') {
+          othersRow[m.columnName] = Math.min(...othersData.map(row => Number(row[m.columnName]) || Infinity));
+        }
+      });
+      
+      return [...topData, othersRow];
+    }
+    
+    return data;
+  }, [sortedData, activeArea.topN, activeArea.metrics, activeArea.dimensions, showAllTopN]);
 
   const handleAddDimension = (columnName: string) => {
     if (!activeArea.dimensions.find(d => d.columnName === columnName)) {
@@ -343,8 +432,54 @@ export const ReportBuilder = () => {
     updateActiveArea({ dimensions: activeArea.dimensions.filter(d => d.columnName !== columnName) });
   };
 
+  const matrixColumns = useMemo(() => {
+    if (activeArea?.chartType !== 'MATRIX' || !(activeArea.columns || []).length) return [];
+    
+    // Extract unique column keys from the aggregated data
+    const cols = new Set<string>();
+    aggregatedData.forEach(row => {
+      if (row._cols) {
+        Object.keys(row._cols).forEach(colKey => cols.add(colKey));
+      }
+    });
+    
+    // Sort the keys alphabetically (works for formatted dates and strings)
+    const sortedCols = Array.from(cols).sort();
+    
+    return sortedCols.map(colKey => {
+      const parts = colKey.split(' | ');
+      const displayKeyParts = (activeArea.columns || []).map((c, idx) => {
+        const colDef = availableColumns.find(ac => ac.name === c.columnName);
+        if (colDef?.type === 'date') {
+          return formatDateForDisplay(parts[idx], c.dateGranularity);
+        }
+        return parts[idx];
+      });
+      return {
+        sortableKey: colKey,
+        displayKey: displayKeyParts.join(' | ')
+      };
+    });
+  }, [aggregatedData, activeArea?.columns, activeArea?.chartType, availableColumns]);
+
+  const handleUpdateDimensionGranularity = (columnName: string, granularity: DateGranularity) => {
+    updateActiveArea({
+      dimensions: activeArea.dimensions.map(d => 
+        d.columnName === columnName ? { ...d, dateGranularity: granularity } : d
+      )
+    });
+  };
+
   const handleRemoveColumn = (columnName: string) => {
     updateActiveArea({ columns: (activeArea.columns || []).filter(d => d.columnName !== columnName) });
+  };
+
+  const handleUpdateColumnGranularity = (columnName: string, granularity: DateGranularity) => {
+    updateActiveArea({
+      columns: (activeArea.columns || []).map(c => 
+        c.columnName === columnName ? { ...c, dateGranularity: granularity } : c
+      )
+    });
   };
 
   const handleRemoveMetric = (columnName: string) => {
@@ -791,14 +926,33 @@ export const ReportBuilder = () => {
                       Sütunlardan satır ekleyin
                     </div>
                   ) : (
-                    activeArea.dimensions.map((dim, idx) => (
-                      <div key={idx} className="flex items-center justify-between bg-white p-2.5 rounded-lg border border-slate-200 shadow-sm">
-                        <span className="text-sm font-medium text-slate-700">{dim.label}</span>
-                        <button onClick={() => handleRemoveDimension(dim.columnName)} className="text-slate-400 hover:text-rose-500 transition-colors">
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                    ))
+                    activeArea.dimensions.map((dim, idx) => {
+                      const isDate = availableColumns.find(c => c.name === dim.columnName)?.type === 'date';
+                      return (
+                        <div key={idx} className="flex flex-col bg-white p-2.5 rounded-lg border border-slate-200 shadow-sm gap-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm font-medium text-slate-700">{dim.label}</span>
+                            <button onClick={() => handleRemoveDimension(dim.columnName)} className="text-slate-400 hover:text-rose-500 transition-colors">
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                          {isDate && (
+                            <select
+                              value={dim.dateGranularity || 'day'}
+                              onChange={(e) => handleUpdateDimensionGranularity(dim.columnName, e.target.value as DateGranularity)}
+                              className="text-xs border-slate-200 rounded-md py-1"
+                            >
+                              <option value="day">Gün</option>
+                              <option value="dayOfWeek">Haftanın Günü</option>
+                              <option value="week">Hafta</option>
+                              <option value="month">Ay</option>
+                              <option value="quarter">Çeyrek</option>
+                              <option value="year">Yıl</option>
+                            </select>
+                          )}
+                        </div>
+                      );
+                    })
                   )}
                 </div>
               </div>
@@ -815,14 +969,33 @@ export const ReportBuilder = () => {
                       Sütunlardan sütun ekleyin
                     </div>
                   ) : (
-                    (activeArea.columns || []).map((col, idx) => (
-                      <div key={idx} className="flex items-center justify-between bg-white p-2.5 rounded-lg border border-slate-200 shadow-sm">
-                        <span className="text-sm font-medium text-slate-700">{col.label}</span>
-                        <button onClick={() => handleRemoveColumn(col.columnName)} className="text-slate-400 hover:text-rose-500 transition-colors">
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                    ))
+                    (activeArea.columns || []).map((col, idx) => {
+                      const isDate = availableColumns.find(c => c.name === col.columnName)?.type === 'date';
+                      return (
+                        <div key={idx} className="flex flex-col bg-white p-2.5 rounded-lg border border-slate-200 shadow-sm gap-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm font-medium text-slate-700">{col.label}</span>
+                            <button onClick={() => handleRemoveColumn(col.columnName)} className="text-slate-400 hover:text-rose-500 transition-colors">
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                          {isDate && (
+                            <select
+                              value={col.dateGranularity || 'day'}
+                              onChange={(e) => handleUpdateColumnGranularity(col.columnName, e.target.value as DateGranularity)}
+                              className="text-xs border-slate-200 rounded-md py-1"
+                            >
+                              <option value="day">Gün</option>
+                              <option value="dayOfWeek">Haftanın Günü</option>
+                              <option value="week">Hafta</option>
+                              <option value="month">Ay</option>
+                              <option value="quarter">Çeyrek</option>
+                              <option value="year">Yıl</option>
+                            </select>
+                          )}
+                        </div>
+                      );
+                    })
                   )}
                 </div>
               </div>
@@ -908,6 +1081,30 @@ export const ReportBuilder = () => {
                 </button>
               </div>
             </div>
+
+            {/* Top N Seçimi */}
+            <div className="mt-6 pt-6 border-t border-slate-100">
+              <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Gelişmiş Ayarlar</h4>
+              <div className="flex items-center gap-4">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-sm font-medium text-slate-700">İlk N Kayıt (Top N)</label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min="1"
+                      placeholder="Örn: 5, 10"
+                      value={activeArea.topN || ''}
+                      onChange={(e) => {
+                        const val = e.target.value ? parseInt(e.target.value, 10) : undefined;
+                        updateActiveArea({ topN: val });
+                      }}
+                      className="w-32 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    />
+                    <span className="text-xs text-slate-500">Kalan veriler "Diğer" olarak gruplanır.</span>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
 
           {/* Önizleme Alanı */}
@@ -961,13 +1158,13 @@ export const ReportBuilder = () => {
                       </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-slate-100">
-                      {sortedData.map((row, i) => (
-                        <tr key={i} className="hover:bg-slate-50">
+                      {processedData.map((row, i) => (
+                        <tr key={i} className={`hover:bg-slate-50 ${row._isOthers ? 'bg-slate-50 font-semibold' : ''}`}>
                           {activeArea.dimensions.map((dim, j) => {
                             const colDef = availableColumns.find(c => c.name === dim.columnName);
                             return (
                               <td key={`td-dim-${i}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-700 font-medium">
-                                {formatForDisplay(row[dim.columnName], colDef?.type)}
+                                {row._isOthers ? row[dim.columnName] : formatForDisplay(row[dim.columnName], colDef?.type, dim.dateGranularity)}
                               </td>
                             );
                           })}
@@ -985,7 +1182,7 @@ export const ReportBuilder = () => {
                 {activeArea.chartType === 'BAR' && (
                   <div className="h-[400px] w-full">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={aggregatedData} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
+                      <BarChart data={processedData} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
                         <XAxis dataKey="_displayKey" angle={-45} textAnchor="end" height={80} tick={{fontSize: 12, fill: '#64748b'}} />
                         <YAxis tick={{fontSize: 12, fill: '#64748b'}} />
@@ -1005,7 +1202,7 @@ export const ReportBuilder = () => {
                 {activeArea.chartType === 'LINE' && (
                   <div className="h-[400px] w-full">
                     <ResponsiveContainer width="100%" height="100%">
-                      <RechartsLineChart data={aggregatedData} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
+                      <RechartsLineChart data={processedData} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
                         <XAxis dataKey="_displayKey" angle={-45} textAnchor="end" height={80} tick={{fontSize: 12, fill: '#64748b'}} />
                         <YAxis tick={{fontSize: 12, fill: '#64748b'}} />
@@ -1032,7 +1229,7 @@ export const ReportBuilder = () => {
                         />
                         <Legend />
                         <Pie
-                          data={aggregatedData}
+                          data={processedData}
                           dataKey={activeArea.metrics[0]?.columnName || ''}
                           nameKey="_displayKey"
                           cx="50%"
@@ -1041,7 +1238,7 @@ export const ReportBuilder = () => {
                           fill="#8884d8"
                           label={(entry) => entry._displayKey}
                         >
-                          {aggregatedData.map((entry, index) => (
+                          {processedData.map((entry, index) => (
                             <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                           ))}
                         </Pie>
@@ -1053,7 +1250,7 @@ export const ReportBuilder = () => {
                 {activeArea.chartType === 'HORIZONTAL_BAR' && (
                   <div className="h-[400px] w-full">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={aggregatedData} layout="vertical" margin={{ top: 20, right: 30, left: 100, bottom: 20 }}>
+                      <BarChart data={processedData} layout="vertical" margin={{ top: 20, right: 30, left: 100, bottom: 20 }}>
                         <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0" />
                         <XAxis type="number" tick={{fontSize: 12, fill: '#64748b'}} />
                         <YAxis dataKey="_displayKey" type="category" tick={{fontSize: 12, fill: '#64748b'}} width={90} />
@@ -1081,25 +1278,15 @@ export const ReportBuilder = () => {
                             </th>
                           ))}
                           {/* Sütun Başlıkları (Dinamik) */}
-                          {Array.from(new Set(previewData.map(row => {
-                            return (activeArea.columns || []).map(c => {
-                              const colDef = availableColumns.find(ac => ac.name === c.columnName);
-                              return formatForDisplay(row[c.columnName], colDef?.type);
-                            }).join(' | ');
-                          }))).filter(Boolean).map((colKey, i) => (
+                          {matrixColumns.map((col, i) => (
                             <th key={`th-col-${i}`} className="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider border-b border-slate-200" colSpan={activeArea.metrics.length}>
-                              {colKey}
+                              {col.displayKey}
                             </th>
                           ))}
                         </tr>
                         <tr>
                           {activeArea.dimensions.map((_, i) => <th key={`th-empty-${i}`} className="border-r border-slate-200"></th>)}
-                          {Array.from(new Set(previewData.map(row => {
-                            return (activeArea.columns || []).map(c => {
-                              const colDef = availableColumns.find(ac => ac.name === c.columnName);
-                              return formatForDisplay(row[c.columnName], colDef?.type);
-                            }).join(' | ');
-                          }))).filter(Boolean).map((colKey, colIdx) => (
+                          {matrixColumns.map((_, colIdx) => (
                             activeArea.metrics.map((metric, j) => (
                               <th key={`th-met-${colIdx}-${j}`} className="px-4 py-2 text-right text-[10px] font-medium text-slate-400 uppercase tracking-wider bg-slate-50/50">
                                 {metric.label}
@@ -1109,30 +1296,42 @@ export const ReportBuilder = () => {
                         </tr>
                       </thead>
                       <tbody className="bg-white divide-y divide-slate-100">
-                        {/* Matris verisi karmaşık olduğu için basit bir tablo görünümü sunuyoruz. Gerçek matris hesaplaması için daha gelişmiş bir reduce fonksiyonu gerekir. */}
-                        {aggregatedData.map((row, i) => (
-                          <tr key={i} className="hover:bg-slate-50">
+                        {processedData.map((row, i) => (
+                          <tr key={i} className={`hover:bg-slate-50 ${row._isOthers ? 'bg-slate-50 font-semibold' : ''}`}>
                             {activeArea.dimensions.map((dim, j) => {
                               const colDef = availableColumns.find(c => c.name === dim.columnName);
                               return (
                                 <td key={`td-dim-${i}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-700 font-medium border-r border-slate-100">
-                                  {formatForDisplay(row[dim.columnName], colDef?.type)}
+                                  {row._isOthers ? row[dim.columnName] : formatForDisplay(row[dim.columnName], colDef?.type, dim.dateGranularity)}
                                 </td>
                               );
                             })}
-                            {/* Burada her bir sütun kombinasyonu için metrikleri göstermemiz gerekiyor. Şimdilik sadece toplamları gösteriyoruz. */}
-                            {Array.from(new Set(previewData.map(r => (activeArea.columns || []).map(c => formatForDisplay(r[c.columnName], availableColumns.find(ac => ac.name === c.columnName)?.type)).join(' | ')))).filter(Boolean).map((colKey, colIdx) => (
-                               activeArea.metrics.map((metric, j) => (
-                                <td key={`td-met-${i}-${colIdx}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-600 text-right font-mono">
-                                  {/* Gerçek matris verisi hesaplanmadığı için genel toplamı gösteriyoruz. Geliştirilmesi gerekir. */}
-                                  {formatForDisplay(row[metric.columnName], 'number')}
-                                </td>
-                              ))
+                            {/* Her bir sütun kombinasyonu için metrikleri göster */}
+                            {matrixColumns.map((col, colIdx) => (
+                               activeArea.metrics.map((metric, j) => {
+                                const val = row._cols && row._cols[col.sortableKey] ? row._cols[col.sortableKey][metric.columnName] : 0;
+                                return (
+                                  <td key={`td-met-${i}-${colIdx}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-600 text-right font-mono">
+                                    {formatForDisplay(val, 'number')}
+                                  </td>
+                                );
+                              })
                             ))}
                           </tr>
                         ))}
                       </tbody>
                     </table>
+                  </div>
+                )}
+
+                {activeArea.topN && activeArea.topN > 0 && aggregatedData.length > activeArea.topN && (
+                  <div className="mt-4 flex justify-center">
+                    <button
+                      onClick={() => setShowAllTopN(!showAllTopN)}
+                      className="px-4 py-2 text-sm font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors"
+                    >
+                      {showAllTopN ? 'Top N Görünümüne Dön' : 'Tümünü Gör'}
+                    </button>
                   </div>
                 )}
               </div>

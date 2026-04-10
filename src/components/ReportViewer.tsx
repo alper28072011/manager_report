@@ -7,26 +7,9 @@ import { resolveDynamicDate, DYNAMIC_DATE_OPTIONS } from '../utils/dateUtils';
 import { Loader2, Play, Table as TableIcon, BarChart3, LineChart, PieChart, Printer, FileText, Save, ArrowUp, ArrowDown } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart as RechartsLineChart, Line, PieChart as RechartsPieChart, Pie, Cell } from 'recharts';
 import { useSortableData } from '../hooks/useSortableData';
+import { formatForDisplay, formatDateByGranularity, formatDateForDisplay } from '../utils/formatUtils';
 
 const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316'];
-
-const formatForDisplay = (value: any, type?: string) => {
-  if (value === null || value === undefined) return '-';
-  
-  if (type === 'date') {
-    try {
-      return new Intl.DateTimeFormat('tr-TR').format(new Date(value));
-    } catch (e) {
-      return value;
-    }
-  }
-  
-  if (type === 'number' || typeof value === 'number') {
-    return new Intl.NumberFormat('tr-TR').format(Number(value));
-  }
-  
-  return String(value);
-};
 
 const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData: any[], queries: QueryTemplate[] }) => {
   const query = queries.find(q => q.id === area.queryId);
@@ -37,13 +20,30 @@ const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData:
     const grouped = rawData.reduce((acc: any, row: any) => {
       const keyParts = area.dimensions.map(d => {
         const colDef = query?.column_definitions?.find(c => c.name === d.columnName);
+        if (colDef?.type === 'date') {
+          return formatDateByGranularity(row[d.columnName], d.dateGranularity);
+        }
         return formatForDisplay(row[d.columnName], colDef?.type);
       });
       const key = keyParts.join(' | ');
       
       if (!acc[key]) {
-        acc[key] = { _displayKey: key, _count: 0 };
-        area.dimensions.forEach(d => acc[key][d.columnName] = row[d.columnName]);
+        acc[key] = { _count: 0 };
+        
+        // Format display key for charts
+        const displayKeyParts = area.dimensions.map((d, idx) => {
+          const colDef = query?.column_definitions?.find(c => c.name === d.columnName);
+          if (colDef?.type === 'date') {
+            return formatDateForDisplay(keyParts[idx], d.dateGranularity);
+          }
+          return keyParts[idx];
+        });
+        acc[key]._displayKey = displayKeyParts.join(' | ');
+
+        area.dimensions.forEach((d, idx) => {
+          const colDef = query?.column_definitions?.find(c => c.name === d.columnName);
+          acc[key][d.columnName] = colDef?.type === 'date' ? keyParts[idx] : row[d.columnName];
+        });
         area.metrics.forEach(m => {
           acc[key][m.columnName] = m.aggregation === 'MIN' ? Infinity : m.aggregation === 'MAX' ? -Infinity : 0;
         });
@@ -68,6 +68,47 @@ const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData:
             break;
         }
       });
+
+      // Matrix aggregation
+      if (area.chartType === 'MATRIX' && (area.columns || []).length > 0) {
+        const colKeyParts = (area.columns || []).map(c => {
+          const colDef = query?.column_definitions?.find(ac => ac.name === c.columnName);
+          if (colDef?.type === 'date') {
+            return formatDateByGranularity(row[c.columnName], c.dateGranularity);
+          }
+          return formatForDisplay(row[c.columnName], colDef?.type);
+        });
+        const colKey = colKeyParts.join(' | ');
+
+        if (!acc[key]._cols) acc[key]._cols = {};
+        if (!acc[key]._cols[colKey]) {
+          acc[key]._cols[colKey] = { _count: 0 };
+          area.metrics.forEach(m => {
+            acc[key]._cols[colKey][m.columnName] = m.aggregation === 'MIN' ? Infinity : m.aggregation === 'MAX' ? -Infinity : 0;
+          });
+        }
+        
+        acc[key]._cols[colKey]._count += 1;
+        area.metrics.forEach(m => {
+          const val = Number(row[m.columnName]) || 0;
+          switch (m.aggregation) {
+            case 'SUM':
+            case 'AVG':
+              acc[key]._cols[colKey][m.columnName] += val;
+              break;
+            case 'MIN':
+              acc[key]._cols[colKey][m.columnName] = Math.min(acc[key]._cols[colKey][m.columnName], val);
+              break;
+            case 'MAX':
+              acc[key]._cols[colKey][m.columnName] = Math.max(acc[key]._cols[colKey][m.columnName], val);
+              break;
+            case 'COUNT':
+              acc[key]._cols[colKey][m.columnName] = acc[key]._cols[colKey]._count;
+              break;
+          }
+        });
+      }
+
       return acc;
     }, {});
 
@@ -79,12 +120,74 @@ const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData:
           row[m.columnName] = row[m.columnName] / row._count;
         }
       });
+      if (row._cols) {
+        Object.values(row._cols).forEach((col: any) => {
+          area.metrics.forEach(m => {
+            if (m.aggregation === 'AVG' && col._count > 0) {
+              col[m.columnName] = col[m.columnName] / col._count;
+            }
+          });
+        });
+      }
     });
+
+    // Default sort by first metric descending if topN is active
+    if (area.topN && area.metrics.length > 0) {
+      const primaryMetric = area.metrics[0].columnName;
+      result.sort((a: any, b: any) => (Number(b[primaryMetric]) || 0) - (Number(a[primaryMetric]) || 0));
+    } else {
+      // Default sort by date dimension ascending
+      const dateDim = area.dimensions.find(d => query?.column_definitions?.find(c => c.name === d.columnName)?.type === 'date');
+      if (dateDim) {
+        result.sort((a: any, b: any) => {
+          const aVal = String(a[dateDim.columnName] || '');
+          const bVal = String(b[dateDim.columnName] || '');
+          return aVal.localeCompare(bVal);
+        });
+      }
+    }
 
     return result;
   }, [area, rawData, query]);
 
-  const { items: sortedData, requestSort, sortConfig } = useSortableData(aggregatedData);
+  const { items: sortedData, requestSort, sortConfig } = useSortableData(aggregatedData, {
+    key: area.topN ? area.metrics[0]?.columnName : (area.dimensions.find(d => query?.column_definitions?.find(c => c.name === d.columnName)?.type === 'date')?.columnName || area.dimensions[0]?.columnName),
+    direction: area.topN ? 'desc' : 'asc'
+  });
+
+  const [showAllTopN, setShowAllTopN] = useState(false);
+
+  const processedData = useMemo(() => {
+    let data = [...sortedData];
+    
+    if (area.topN && area.topN > 0 && !showAllTopN && data.length > area.topN) {
+      const topData = data.slice(0, area.topN);
+      const othersData = data.slice(area.topN);
+      
+      const othersRow: any = { _displayKey: 'Diğer', _isOthers: true };
+      
+      area.dimensions.forEach(d => {
+        othersRow[d.columnName] = 'Diğer';
+      });
+      
+      area.metrics.forEach(m => {
+        if (m.aggregation === 'SUM' || m.aggregation === 'COUNT') {
+          othersRow[m.columnName] = othersData.reduce((sum, row) => sum + (Number(row[m.columnName]) || 0), 0);
+        } else if (m.aggregation === 'AVG') {
+          const total = othersData.reduce((sum, row) => sum + (Number(row[m.columnName]) || 0), 0);
+          othersRow[m.columnName] = total / othersData.length;
+        } else if (m.aggregation === 'MAX') {
+          othersRow[m.columnName] = Math.max(...othersData.map(row => Number(row[m.columnName]) || -Infinity));
+        } else if (m.aggregation === 'MIN') {
+          othersRow[m.columnName] = Math.min(...othersData.map(row => Number(row[m.columnName]) || Infinity));
+        }
+      });
+      
+      return [...topData, othersRow];
+    }
+    
+    return data;
+  }, [sortedData, area.topN, area.metrics, area.dimensions, showAllTopN]);
 
   const SortIcon = ({ columnKey }: { columnKey: string }) => {
     if (sortConfig?.key !== columnKey) {
@@ -96,6 +199,36 @@ const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData:
       <ArrowDown className="w-3 h-3 text-indigo-600" />
     );
   };
+
+  const matrixColumns = useMemo(() => {
+    if (area.chartType !== 'MATRIX' || !(area.columns || []).length) return [];
+    
+    // Extract unique column keys from the aggregated data
+    const cols = new Set<string>();
+    aggregatedData.forEach(row => {
+      if (row._cols) {
+        Object.keys(row._cols).forEach(colKey => cols.add(colKey));
+      }
+    });
+    
+    // Sort the keys alphabetically (works for formatted dates and strings)
+    const sortedCols = Array.from(cols).sort();
+    
+    return sortedCols.map(colKey => {
+      const parts = colKey.split(' | ');
+      const displayKeyParts = (area.columns || []).map((c, idx) => {
+        const colDef = query?.column_definitions?.find(ac => ac.name === c.columnName);
+        if (colDef?.type === 'date') {
+          return formatDateForDisplay(parts[idx], c.dateGranularity);
+        }
+        return parts[idx];
+      });
+      return {
+        sortableKey: colKey,
+        displayKey: displayKeyParts.join(' | ')
+      };
+    });
+  }, [aggregatedData, area.columns, area.chartType, query]);
 
   if (!aggregatedData.length) {
     return (
@@ -139,13 +272,13 @@ const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData:
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100">
-              {sortedData.map((row: any, i: number) => (
-                <tr key={i} className="hover:bg-slate-50">
+              {processedData.map((row: any, i: number) => (
+                <tr key={i} className={`hover:bg-slate-50 ${row._isOthers ? 'bg-slate-50 font-semibold' : ''}`}>
                   {area.dimensions.map((dim, j) => {
                     const colDef = query?.column_definitions?.find(c => c.name === dim.columnName);
                     return (
                       <td key={`td-dim-${i}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-700 font-medium">
-                        {formatForDisplay(row[dim.columnName], colDef?.type)}
+                        {row._isOthers ? row[dim.columnName] : formatForDisplay(row[dim.columnName], colDef?.type, dim.dateGranularity)}
                       </td>
                     );
                   })}
@@ -164,7 +297,7 @@ const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData:
       {area.chartType === 'BAR' && (
         <div className="h-[400px] w-full">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={aggregatedData} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
+            <BarChart data={processedData} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
               <XAxis dataKey="_displayKey" angle={-45} textAnchor="end" height={80} tick={{fontSize: 12, fill: '#64748b'}} />
               <YAxis tick={{fontSize: 12, fill: '#64748b'}} />
@@ -184,7 +317,7 @@ const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData:
       {area.chartType === 'LINE' && (
         <div className="h-[400px] w-full">
           <ResponsiveContainer width="100%" height="100%">
-            <RechartsLineChart data={aggregatedData} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
+            <RechartsLineChart data={processedData} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
               <XAxis dataKey="_displayKey" angle={-45} textAnchor="end" height={80} tick={{fontSize: 12, fill: '#64748b'}} />
               <YAxis tick={{fontSize: 12, fill: '#64748b'}} />
@@ -213,7 +346,7 @@ const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData:
               {area.metrics.map((m, i) => (
                 <Pie
                   key={m.columnName}
-                  data={aggregatedData}
+                  data={processedData}
                   dataKey={m.columnName}
                   nameKey="_displayKey"
                   cx="50%"
@@ -223,7 +356,7 @@ const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData:
                   fill={COLORS[i % COLORS.length]}
                   label={i === 0 ? { fill: '#475569', fontSize: 12 } : undefined}
                 >
-                  {aggregatedData.map((entry: any, index: number) => (
+                  {processedData.map((entry: any, index: number) => (
                     <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                   ))}
                 </Pie>
@@ -236,7 +369,7 @@ const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData:
       {area.chartType === 'HORIZONTAL_BAR' && (
         <div className="h-[400px] w-full">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={aggregatedData} layout="vertical" margin={{ top: 20, right: 30, left: 100, bottom: 20 }}>
+            <BarChart data={processedData} layout="vertical" margin={{ top: 20, right: 30, left: 100, bottom: 20 }}>
               <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0" />
               <XAxis type="number" tick={{fontSize: 12, fill: '#64748b'}} />
               <YAxis dataKey="_displayKey" type="category" tick={{fontSize: 12, fill: '#64748b'}} width={90} />
@@ -264,25 +397,15 @@ const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData:
                   </th>
                 ))}
                 {/* Sütun Başlıkları (Dinamik) */}
-                {Array.from(new Set(rawData.map(row => {
-                  return (area.columns || []).map(c => {
-                    const colDef = query?.column_definitions?.find(ac => ac.name === c.columnName);
-                    return formatForDisplay(row[c.columnName], colDef?.type);
-                  }).join(' | ');
-                }))).filter(Boolean).map((colKey, i) => (
+                {matrixColumns.map((col, i) => (
                   <th key={`th-col-${i}`} className="px-4 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider border-b border-slate-200" colSpan={area.metrics.length}>
-                    {colKey}
+                    {col.displayKey}
                   </th>
                 ))}
               </tr>
               <tr>
                 {area.dimensions.map((_, i) => <th key={`th-empty-${i}`} className="border-r border-slate-200"></th>)}
-                {Array.from(new Set(rawData.map(row => {
-                  return (area.columns || []).map(c => {
-                    const colDef = query?.column_definitions?.find(ac => ac.name === c.columnName);
-                    return formatForDisplay(row[c.columnName], colDef?.type);
-                  }).join(' | ');
-                }))).filter(Boolean).map((colKey, colIdx) => (
+                {matrixColumns.map((_, colIdx) => (
                   area.metrics.map((metric, j) => (
                     <th key={`th-met-${colIdx}-${j}`} className="px-4 py-2 text-right text-[10px] font-medium text-slate-500 uppercase tracking-wider bg-slate-50/50">
                       {metric.label}
@@ -292,27 +415,42 @@ const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData:
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-100">
-              {aggregatedData.map((row: any, i: number) => (
-                <tr key={i} className="hover:bg-slate-50">
+              {processedData.map((row: any, i: number) => (
+                <tr key={i} className={`hover:bg-slate-50 ${row._isOthers ? 'bg-slate-50 font-semibold' : ''}`}>
                   {area.dimensions.map((dim, j) => {
                     const colDef = query?.column_definitions?.find(c => c.name === dim.columnName);
                     return (
                       <td key={`td-dim-${i}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-700 font-medium border-r border-slate-100">
-                        {formatForDisplay(row[dim.columnName], colDef?.type)}
+                        {row._isOthers ? row[dim.columnName] : formatForDisplay(row[dim.columnName], colDef?.type, dim.dateGranularity)}
                       </td>
                     );
                   })}
-                  {Array.from(new Set(rawData.map(r => (area.columns || []).map(c => formatForDisplay(r[c.columnName], query?.column_definitions?.find(ac => ac.name === c.columnName)?.type)).join(' | ')))).filter(Boolean).map((colKey, colIdx) => (
-                     area.metrics.map((metric, j) => (
-                      <td key={`td-met-${i}-${colIdx}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-600 text-right font-mono">
-                        {formatForDisplay(row[metric.columnName], 'number')}
-                      </td>
-                    ))
+                  {/* Her bir sütun kombinasyonu için metrikleri göster */}
+                  {matrixColumns.map((col, colIdx) => (
+                     area.metrics.map((metric, j) => {
+                      const val = row._cols && row._cols[col.sortableKey] ? row._cols[col.sortableKey][metric.columnName] : 0;
+                      return (
+                        <td key={`td-met-${i}-${colIdx}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-600 text-right font-mono">
+                          {formatForDisplay(val, 'number')}
+                        </td>
+                      );
+                    })
                   ))}
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {area.topN && area.topN > 0 && aggregatedData.length > area.topN && (
+        <div className="mt-4 flex justify-center">
+          <button
+            onClick={() => setShowAllTopN(!showAllTopN)}
+            className="px-4 py-2 text-sm font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors"
+          >
+            {showAllTopN ? 'Top N Görünümüne Dön' : 'Tümünü Gör'}
+          </button>
         </div>
       )}
     </div>
@@ -529,91 +667,6 @@ export const ReportViewer = ({ hotels }: { hotels: Hotel[] }) => {
     } finally {
       setFetchingData(false);
     }
-  };
-
-  const formatForDisplay = (value: any, type?: string) => {
-    if (value === null || value === undefined) return '-';
-    
-    if (type === 'date') {
-      try {
-        const date = new Date(value);
-        if (!isNaN(date.getTime())) {
-          return new Intl.DateTimeFormat('tr-TR', {
-            day: '2-digit',
-            month: '2-digit',
-            year: 'numeric'
-          }).format(date);
-        }
-      } catch (e) {}
-      
-      const str = String(value);
-      const match = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
-      if (match) {
-        return `${match[3]}.${match[2]}.${match[1]}`;
-      }
-      return value;
-    }
-    
-    if (type === 'number' || typeof value === 'number') {
-      return new Intl.NumberFormat('tr-TR', { maximumFractionDigits: 2 }).format(Number(value));
-    }
-    
-    return String(value);
-  };
-
-  const aggregateData = (area: ReportArea, rawData: any[]) => {
-    if (!rawData || !rawData.length || area.dimensions.length === 0 || area.metrics.length === 0) return [];
-
-    const query = queries.find(q => q.id === area.queryId);
-
-    const grouped = rawData.reduce((acc: any, row: any) => {
-      const keyParts = area.dimensions.map(d => {
-        const colDef = query?.column_definitions?.find(c => c.name === d.columnName);
-        return formatForDisplay(row[d.columnName], colDef?.type);
-      });
-      const key = keyParts.join(' | ');
-      
-      if (!acc[key]) {
-        acc[key] = { _displayKey: key, _count: 0 };
-        area.dimensions.forEach(d => acc[key][d.columnName] = row[d.columnName]);
-        area.metrics.forEach(m => {
-          acc[key][m.columnName] = m.aggregation === 'MIN' ? Infinity : m.aggregation === 'MAX' ? -Infinity : 0;
-        });
-      }
-      
-      acc[key]._count += 1;
-      area.metrics.forEach(m => {
-        const val = Number(row[m.columnName]) || 0;
-        switch (m.aggregation) {
-          case 'SUM':
-          case 'AVG':
-            acc[key][m.columnName] += val;
-            break;
-          case 'MIN':
-            acc[key][m.columnName] = Math.min(acc[key][m.columnName], val);
-            break;
-          case 'MAX':
-            acc[key][m.columnName] = Math.max(acc[key][m.columnName], val);
-            break;
-          case 'COUNT':
-            acc[key][m.columnName] = acc[key]._count;
-            break;
-        }
-      });
-      return acc;
-    }, {});
-
-    const result = Object.values(grouped);
-    
-    result.forEach((row: any) => {
-      area.metrics.forEach(m => {
-        if (m.aggregation === 'AVG' && row._count > 0) {
-          row[m.columnName] = row[m.columnName] / row._count;
-        }
-      });
-    });
-
-    return result;
   };
 
   if (loading) {
