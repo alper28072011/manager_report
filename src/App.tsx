@@ -12,6 +12,7 @@ import { UserManagement } from './components/UserManagement';
 import { QuerySettingsPanel } from './components/QuerySettingsPanel';
 import { ReportViewer } from './components/ReportViewer';
 import { ReportBuilder } from './components/ReportBuilder';
+import { HotelSettings } from './components/HotelSettings';
 
 import { LayoutDashboard, Settings, Users, Building2, LogOut, Loader2, Database, BarChart3 } from 'lucide-react';
 
@@ -121,6 +122,9 @@ const AppContent = () => {
               <button onClick={() => navigate('/hotels')} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-200 ${location.pathname === '/hotels' ? 'bg-indigo-600/10 text-indigo-400 font-medium' : 'hover:bg-slate-800 hover:text-white'}`}>
                 <Building2 size={20} /> Oteller
               </button>
+              <button onClick={() => navigate('/hotel-settings')} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-200 ${location.pathname === '/hotel-settings' ? 'bg-indigo-600/10 text-indigo-400 font-medium' : 'hover:bg-slate-800 hover:text-white'}`}>
+                <BarChart3 size={20} /> Otel Ayarları & BI
+              </button>
               <button onClick={() => navigate('/users')} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-200 ${location.pathname === '/users' ? 'bg-indigo-600/10 text-indigo-400 font-medium' : 'hover:bg-slate-800 hover:text-white'}`}>
                 <Users size={20} /> Kullanıcılar
               </button>
@@ -156,6 +160,7 @@ const AppContent = () => {
               <>
                 <Route path="/report-builder" element={<ReportBuilder hotels={hotels} />} />
                 <Route path="/hotels" element={<HotelManagement />} />
+                <Route path="/hotel-settings" element={<HotelSettings />} />
                 <Route path="/users" element={<UserManagement />} />
                 <Route path="/queries" element={<QuerySettingsPanel hotels={hotels} />} />
               </>

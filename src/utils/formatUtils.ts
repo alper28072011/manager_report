@@ -78,6 +78,14 @@ export const formatForDisplay = (value: any, type?: string, granularity?: DateGr
     return formatDateForDisplay(sortable, granularity);
   }
   
+  if (type === 'percentage') {
+    return new Intl.NumberFormat('tr-TR', { style: 'percent', minimumFractionDigits: 2 }).format(Number(value) / 100);
+  }
+  
+  if (type === 'currency') {
+    return new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY' }).format(Number(value));
+  }
+  
   if (type === 'number' || typeof value === 'number') {
     return new Intl.NumberFormat('tr-TR').format(Number(value));
   }

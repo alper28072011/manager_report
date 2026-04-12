@@ -56,6 +56,32 @@
         "created_at": { "type": "string", "format": "date-time" }
       },
       "required": ["name", "hotel_code", "parameters", "visible_columns"]
+    },
+    "HotelParameter": {
+      "title": "HotelParameter",
+      "description": "Static parameters for a hotel (e.g. ROOM_CAPACITY)",
+      "type": "object",
+      "properties": {
+        "hotel_id": { "type": "string" },
+        "param_key": { "type": "string" },
+        "param_value": { "type": "string" },
+        "param_type": { "type": "string", "enum": ["number", "date", "text"] },
+        "createdAt": { "type": "timestamp" }
+      },
+      "required": ["hotel_id", "param_key", "param_value", "param_type"]
+    },
+    "CalculatedMeasure": {
+      "title": "CalculatedMeasure",
+      "description": "User defined formulas for calculated metrics",
+      "type": "object",
+      "properties": {
+        "hotel_id": { "type": "string" },
+        "measure_name": { "type": "string" },
+        "formula": { "type": "string" },
+        "format_type": { "type": "string", "enum": ["number", "percentage", "currency"] },
+        "createdAt": { "type": "timestamp" }
+      },
+      "required": ["hotel_id", "measure_name", "formula", "format_type"]
     }
   },
   "firestore": {
@@ -74,6 +100,14 @@
     "/report_views/{viewId}": {
       "schema": { "$ref": "#/entities/ReportView" },
       "description": "Stores saved report views."
+    },
+    "/hotel_parameters/{paramId}": {
+      "schema": { "$ref": "#/entities/HotelParameter" },
+      "description": "Hotel parameters"
+    },
+    "/calculated_measures/{measureId}": {
+      "schema": { "$ref": "#/entities/CalculatedMeasure" },
+      "description": "Calculated measures"
     }
   }
 }

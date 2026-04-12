@@ -9,9 +9,9 @@ class HotelDataEngine:
         self.hotel_id = hotel_id
         self.base_url = "https://api.easypms.com/v1" # Örnek URL
 
-    def execute_dynamic_query(self, query_template: dict, start_date: str, end_date: str):
+    def execute_dynamic_query(self, query_template: dict, start_date: str, end_date: str, parameters: list = None, measures: list = None):
         """
-        İş Zekası (BI) Motoru: Dinamik sorgu şablonuna göre veri çeker.
+        İş Zekası (BI) Motoru: Dinamik sorgu şablonuna göre veri çeker ve hesaplanmış metrikleri uygular.
         """
         # 1. Payload Template'i al ve yer tutucuları (placeholders) değiştir
         payload_str = query_template.get("payload_template", "{}")
@@ -49,11 +49,11 @@ class HotelDataEngine:
             # Simülasyon: API'den dönen Array of Arrays yanıtı
             mock_api_response = [
                 [ # 0. İndeks (Asıl Veri)
-                    {"SALEDATE": start_date, "ROOMREVENUE": 15000, "PAX": 200, "OCCUPANCY": 85.5},
-                    {"SALEDATE": end_date, "ROOMREVENUE": 16000, "PAX": 210, "OCCUPANCY": 90.0}
+                    {"SALEDATE": start_date, "ROOMREVENUE": 15000, "ROOM": 180, "PAX": 200, "OCCUPANCY": 85.5},
+                    {"SALEDATE": end_date, "ROOMREVENUE": 16000, "ROOM": 190, "PAX": 210, "OCCUPANCY": 90.0}
                 ],
                 [ # 1. İndeks (Özet/Meta Veri)
-                    {"TOTAL_REVENUE": 31000, "TOTAL_PAX": 410, "AVG_OCCUPANCY": 87.75}
+                    {"TOTAL_REVENUE": 31000, "TOTAL_ROOM": 370, "TOTAL_PAX": 410, "AVG_OCCUPANCY": 87.75}
                 ]
             ]
             
@@ -69,6 +69,33 @@ class HotelDataEngine:
             
             # Veri tiplerini otomatik dönüştür (sayıları int/float yapar)
             df = df.convert_dtypes()
+            
+            if df.empty:
+                return df
+                
+            # 5. Parametreleri DataFrame'e ekle
+            if parameters:
+                for param in parameters:
+                    # Parametre tipine göre dönüşüm
+                    val = param.param_value
+                    if param.param_type == 'number':
+                        try:
+                            val = float(val)
+                        except ValueError:
+                            pass
+                    df[param.param_key] = val
+                    
+            # 6. Hesaplanmış Metrikleri (Calculated Measures) Uygula
+            if measures:
+                for measure in measures:
+                    try:
+                        # pandas.eval kullanarak formülü hesapla
+                        # Örnek formül: (ROOM / ROOM_CAPACITY) * 100
+                        # eval() DataFrame'in sütunlarını değişken olarak kullanabilir
+                        df[measure.measure_name] = df.eval(measure.formula)
+                    except Exception as eval_e:
+                        print(f"Formül hesaplama hatası ({measure.measure_name}): {eval_e}")
+                        df[measure.measure_name] = None
             
             return df
             

@@ -11,15 +11,25 @@ import { formatForDisplay, formatDateByGranularity, formatDateForDisplay } from 
 
 const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316'];
 
-const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData: any[], queries: QueryTemplate[] }) => {
+const ReportAreaView = ({ area, rawData, queries, calculatedMeasures }: { area: ReportArea, rawData: any[], queries: QueryTemplate[], calculatedMeasures: any[] }) => {
   const query = queries.find(q => q.id === area.queryId);
   
+  const extendedColumnDefinitions = useMemo(() => {
+    const baseCols = query?.column_definitions || [];
+    const measureCols = calculatedMeasures.map(m => ({
+      name: m.measure_name,
+      type: m.format_type || 'number',
+      label: m.measure_name + ' (Hesaplanmış)'
+    }));
+    return [...baseCols, ...measureCols];
+  }, [query, calculatedMeasures]);
+
   const aggregatedData = useMemo(() => {
     if (!rawData.length || area.dimensions.length === 0 || area.metrics.length === 0) return [];
 
     const grouped = rawData.reduce((acc: any, row: any) => {
       const keyParts = area.dimensions.map(d => {
-        const colDef = query?.column_definitions?.find(c => c.name === d.columnName);
+        const colDef = extendedColumnDefinitions?.find(c => c.name === d.columnName);
         if (colDef?.type === 'date') {
           return formatDateByGranularity(row[d.columnName], d.dateGranularity);
         }
@@ -32,7 +42,7 @@ const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData:
         
         // Format display key for charts
         const displayKeyParts = area.dimensions.map((d, idx) => {
-          const colDef = query?.column_definitions?.find(c => c.name === d.columnName);
+          const colDef = extendedColumnDefinitions?.find(c => c.name === d.columnName);
           if (colDef?.type === 'date') {
             return formatDateForDisplay(keyParts[idx], d.dateGranularity);
           }
@@ -41,7 +51,7 @@ const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData:
         acc[key]._displayKey = displayKeyParts.join(' | ');
 
         area.dimensions.forEach((d, idx) => {
-          const colDef = query?.column_definitions?.find(c => c.name === d.columnName);
+          const colDef = extendedColumnDefinitions?.find(c => c.name === d.columnName);
           acc[key][d.columnName] = colDef?.type === 'date' ? keyParts[idx] : row[d.columnName];
         });
         area.metrics.forEach(m => {
@@ -72,7 +82,7 @@ const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData:
       // Matrix aggregation
       if (area.chartType === 'MATRIX' && (area.columns || []).length > 0) {
         const colKeyParts = (area.columns || []).map(c => {
-          const colDef = query?.column_definitions?.find(ac => ac.name === c.columnName);
+          const colDef = extendedColumnDefinitions?.find(ac => ac.name === c.columnName);
           if (colDef?.type === 'date') {
             return formatDateByGranularity(row[c.columnName], c.dateGranularity);
           }
@@ -137,7 +147,7 @@ const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData:
       result.sort((a: any, b: any) => (Number(b[primaryMetric]) || 0) - (Number(a[primaryMetric]) || 0));
     } else {
       // Default sort by date dimension ascending
-      const dateDim = area.dimensions.find(d => query?.column_definitions?.find(c => c.name === d.columnName)?.type === 'date');
+      const dateDim = area.dimensions.find(d => extendedColumnDefinitions?.find(c => c.name === d.columnName)?.type === 'date');
       if (dateDim) {
         result.sort((a: any, b: any) => {
           const aVal = String(a[dateDim.columnName] || '');
@@ -151,7 +161,7 @@ const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData:
   }, [area, rawData, query]);
 
   const { items: sortedData, requestSort, sortConfig } = useSortableData(aggregatedData, {
-    key: area.topN ? area.metrics[0]?.columnName : (area.dimensions.find(d => query?.column_definitions?.find(c => c.name === d.columnName)?.type === 'date')?.columnName || area.dimensions[0]?.columnName),
+    key: area.topN ? area.metrics[0]?.columnName : (area.dimensions.find(d => extendedColumnDefinitions?.find(c => c.name === d.columnName)?.type === 'date')?.columnName || area.dimensions[0]?.columnName),
     direction: area.topN ? 'desc' : 'asc'
   });
 
@@ -201,7 +211,10 @@ const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData:
   };
 
   const matrixColumns = useMemo(() => {
-    if (area.chartType !== 'MATRIX' || !(area.columns || []).length) return [];
+    if (area.chartType !== 'MATRIX') return [];
+    if (!(area.columns || []).length) {
+      return [{ sortableKey: '_total', displayKey: 'Toplam' }];
+    }
     
     // Extract unique column keys from the aggregated data
     const cols = new Set<string>();
@@ -217,7 +230,7 @@ const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData:
     return sortedCols.map(colKey => {
       const parts = colKey.split(' | ');
       const displayKeyParts = (area.columns || []).map((c, idx) => {
-        const colDef = query?.column_definitions?.find(ac => ac.name === c.columnName);
+        const colDef = extendedColumnDefinitions?.find(ac => ac.name === c.columnName);
         if (colDef?.type === 'date') {
           return formatDateForDisplay(parts[idx], c.dateGranularity);
         }
@@ -275,18 +288,21 @@ const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData:
               {processedData.map((row: any, i: number) => (
                 <tr key={i} className={`hover:bg-slate-50 ${row._isOthers ? 'bg-slate-50 font-semibold' : ''}`}>
                   {area.dimensions.map((dim, j) => {
-                    const colDef = query?.column_definitions?.find(c => c.name === dim.columnName);
+                    const colDef = extendedColumnDefinitions?.find(c => c.name === dim.columnName);
                     return (
                       <td key={`td-dim-${i}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-700 font-medium">
                         {row._isOthers ? row[dim.columnName] : formatForDisplay(row[dim.columnName], colDef?.type, dim.dateGranularity)}
                       </td>
                     );
                   })}
-                  {area.metrics.map((metric, j) => (
-                    <td key={`td-met-${i}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-600 text-right font-mono">
-                      {formatForDisplay(row[metric.columnName], 'number')}
-                    </td>
-                  ))}
+                  {area.metrics.map((metric, j) => {
+                    const metricColDef = extendedColumnDefinitions.find(c => c.name === metric.columnName);
+                    return (
+                      <td key={`td-met-${i}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-600 text-right font-mono">
+                        {formatForDisplay(row[metric.columnName], metricColDef?.type || 'number')}
+                      </td>
+                    );
+                  })}
                 </tr>
               ))}
             </tbody>
@@ -386,6 +402,40 @@ const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData:
         </div>
       )}
 
+      {area.chartType === 'KPI' && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {area.metrics.map((metric, idx) => {
+            // KPI için toplam değeri hesapla
+            const totalValue = processedData.reduce((sum, row) => {
+              const val = Number(row[metric.columnName]) || 0;
+              return sum + val;
+            }, 0);
+            
+            // Eğer AVG ise ortalama al
+            const finalValue = metric.aggregation === 'AVG' && processedData.length > 0 
+              ? totalValue / processedData.length 
+              : totalValue;
+
+            const colDef = extendedColumnDefinitions.find(c => c.name === metric.columnName);
+            const formatType = colDef?.type || 'number';
+
+            return (
+              <div key={`kpi-${idx}`} className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-center items-center text-center">
+                <p className="text-sm font-medium text-slate-500 mb-2">{metric.label}</p>
+                <p className="text-3xl font-bold text-slate-800">
+                  {formatForDisplay(finalValue, formatType)}
+                </p>
+              </div>
+            );
+          })}
+          {area.metrics.length === 0 && (
+            <div className="col-span-full p-8 text-center text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+              KPI kartı oluşturmak için en az bir metrik seçin.
+            </div>
+          )}
+        </div>
+      )}
+
       {area.chartType === 'MATRIX' && (
         <div className="overflow-x-auto border border-slate-200 rounded-lg">
           <table className="min-w-full divide-y divide-slate-200">
@@ -418,7 +468,7 @@ const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData:
               {processedData.map((row: any, i: number) => (
                 <tr key={i} className={`hover:bg-slate-50 ${row._isOthers ? 'bg-slate-50 font-semibold' : ''}`}>
                   {area.dimensions.map((dim, j) => {
-                    const colDef = query?.column_definitions?.find(c => c.name === dim.columnName);
+                    const colDef = extendedColumnDefinitions?.find(c => c.name === dim.columnName);
                     return (
                       <td key={`td-dim-${i}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-700 font-medium border-r border-slate-100">
                         {row._isOthers ? row[dim.columnName] : formatForDisplay(row[dim.columnName], colDef?.type, dim.dateGranularity)}
@@ -428,10 +478,13 @@ const ReportAreaView = ({ area, rawData, queries }: { area: ReportArea, rawData:
                   {/* Her bir sütun kombinasyonu için metrikleri göster */}
                   {matrixColumns.map((col, colIdx) => (
                      area.metrics.map((metric, j) => {
-                      const val = row._cols && row._cols[col.sortableKey] ? row._cols[col.sortableKey][metric.columnName] : 0;
+                      const val = row._cols && row._cols[col.sortableKey] 
+                        ? row._cols[col.sortableKey][metric.columnName] 
+                        : (col.sortableKey === '_total' ? row[metric.columnName] : 0);
+                      const metricColDef = extendedColumnDefinitions.find(c => c.name === metric.columnName);
                       return (
                         <td key={`td-met-${i}-${colIdx}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-600 text-right font-mono">
-                          {formatForDisplay(val, 'number')}
+                          {formatForDisplay(val, metricColDef?.type || 'number')}
                         </td>
                       );
                     })
@@ -469,6 +522,8 @@ export const ReportViewer = ({ hotels }: { hotels: Hotel[] }) => {
   
   const [fetchingData, setFetchingData] = useState(false);
   const [reportData, setReportData] = useState<Record<string, any[]>>({}); // areaId -> data
+  const [hotelParameters, setHotelParameters] = useState<any[]>([]);
+  const [calculatedMeasures, setCalculatedMeasures] = useState<any[]>([]);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -491,6 +546,26 @@ export const ReportViewer = ({ hotels }: { hotels: Hotel[] }) => {
     };
     fetchData();
   }, [hotels]);
+
+  useEffect(() => {
+    if (!selectedHotelCode) return;
+    const fetchHotelSettings = async () => {
+      try {
+        const { query, where, collection, getDocs } = await import('firebase/firestore');
+        
+        const paramsQuery = query(collection(db, 'hotel_parameters'), where('hotel_id', '==', selectedHotelCode));
+        const paramsSnap = await getDocs(paramsQuery);
+        setHotelParameters(paramsSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+
+        const measuresQuery = query(collection(db, 'calculated_measures'), where('hotel_id', '==', selectedHotelCode));
+        const measuresSnap = await getDocs(measuresQuery);
+        setCalculatedMeasures(measuresSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+      } catch (error) {
+        console.error("Error fetching hotel settings:", error);
+      }
+    };
+    fetchHotelSettings();
+  }, [selectedHotelCode]);
 
   const selectedReport = useMemo(() => reports.find(r => r.id === selectedReportId), [reports, selectedReportId]);
 
@@ -654,6 +729,33 @@ export const ReportViewer = ({ hotels }: { hotels: Hotel[] }) => {
 
         if (!Array.isArray(data)) {
           data = [data];
+        }
+
+        // Apply calculated measures
+        if (calculatedMeasures.length > 0) {
+          const paramsMap = hotelParameters.reduce((acc, p) => {
+            acc[p.param_key] = Number(p.param_value) || p.param_value;
+            return acc;
+          }, {});
+
+          data = data.map(row => {
+            const newRow = { ...row };
+            const context = { ...newRow, ...paramsMap };
+            const keys = Object.keys(context);
+            const values = Object.values(context);
+            
+            calculatedMeasures.forEach(measure => {
+              try {
+                // Create a safe function to evaluate the formula
+                const func = new Function(...keys, `return ${measure.formula};`);
+                newRow[measure.measure_name] = func(...values);
+              } catch (e) {
+                console.warn(`Error evaluating formula for ${measure.measure_name}:`, e);
+                newRow[measure.measure_name] = 0;
+              }
+            });
+            return newRow;
+          });
         }
 
         newReportData[area.id] = data;
@@ -847,7 +949,7 @@ export const ReportViewer = ({ hotels }: { hotels: Hotel[] }) => {
                   <h3 className="text-xl font-bold text-slate-800">{area.title || `Bölüm ${index + 1}`}</h3>
                   {area.subtitle && <p className="text-slate-500 mt-1">{area.subtitle}</p>}
                 </div>
-                <ReportAreaView area={area} rawData={rawData} queries={queries} />
+                <ReportAreaView area={area} rawData={rawData} queries={queries} calculatedMeasures={calculatedMeasures} />
               </div>
             );
           })}

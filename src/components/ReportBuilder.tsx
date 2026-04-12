@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { collection, getDocs, doc, addDoc, updateDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
-import { QueryTemplate, Hotel, ReportDefinition, ReportDimension, ReportMetric, AggregationType, ChartType, ReportArea, OperationType } from '../types';
+import { QueryTemplate, Hotel, ReportDefinition, ReportDimension, ReportMetric, AggregationType, ChartType, ReportArea, OperationType, DateGranularity } from '../types';
 import { Settings2, Play, Table as TableIcon, BarChart3, LineChart, PieChart, Save, Loader2, GripVertical, Trash2, X, ChevronDown, Plus, LayoutTemplate, ArrowUp, ArrowDown } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart as RechartsLineChart, Line, PieChart as RechartsPieChart, Pie, Cell } from 'recharts';
 import { handleFirestoreError } from '../utils/errorHandling';
@@ -25,8 +25,30 @@ export const ReportBuilder = () => {
   
   // Test Oteli
   const [testHotelCode, setTestHotelCode] = useState<string>('');
+  const [hotelParameters, setHotelParameters] = useState<any[]>([]);
+  const [calculatedMeasures, setCalculatedMeasures] = useState<any[]>([]);
 
   const generateId = () => Date.now().toString() + Math.random().toString(36).substring(2);
+
+  useEffect(() => {
+    if (!testHotelCode) return;
+    const fetchHotelSettings = async () => {
+      try {
+        const { query, where, collection, getDocs } = await import('firebase/firestore');
+        
+        const paramsQuery = query(collection(db, 'hotel_parameters'), where('hotel_id', '==', testHotelCode));
+        const paramsSnap = await getDocs(paramsQuery);
+        setHotelParameters(paramsSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+
+        const measuresQuery = query(collection(db, 'calculated_measures'), where('hotel_id', '==', testHotelCode));
+        const measuresSnap = await getDocs(measuresQuery);
+        setCalculatedMeasures(measuresSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+      } catch (error) {
+        console.error("Error fetching hotel settings:", error);
+      }
+    };
+    fetchHotelSettings();
+  }, [testHotelCode]);
 
   // Rapor Alanları (Görünümler)
   const [areas, setAreas] = useState<ReportArea[]>([{
@@ -125,12 +147,21 @@ export const ReportBuilder = () => {
 
   const availableColumns = useMemo(() => {
     if (!selectedQuery?.column_definitions) return [];
-    return selectedQuery.column_definitions.map(col => ({
+    const baseColumns = selectedQuery.column_definitions.map(col => ({
       name: col.name,
       type: col.type,
       label: col.label || col.name
     }));
-  }, [selectedQuery]);
+    
+    // Add calculated measures as numeric columns
+    const measureColumns = calculatedMeasures.map(m => ({
+      name: m.measure_name,
+      type: m.format_type || 'number',
+      label: m.measure_name + ' (Hesaplanmış)'
+    }));
+    
+    return [...baseColumns, ...measureColumns];
+  }, [selectedQuery, calculatedMeasures]);
 
   const handleParamChange = (variable: string, value: string) => {
     updateActiveArea({
@@ -219,6 +250,33 @@ export const ReportBuilder = () => {
 
       if (!Array.isArray(resultData)) {
         resultData = [resultData];
+      }
+
+      // Apply calculated measures
+      if (calculatedMeasures.length > 0) {
+        const paramsMap = hotelParameters.reduce((acc, p) => {
+          acc[p.param_key] = Number(p.param_value) || p.param_value;
+          return acc;
+        }, {});
+
+        resultData = resultData.map(row => {
+          const newRow = { ...row };
+          const context = { ...newRow, ...paramsMap };
+          const keys = Object.keys(context);
+          const values = Object.values(context);
+          
+          calculatedMeasures.forEach(measure => {
+            try {
+              // Create a safe function to evaluate the formula
+              const func = new Function(...keys, `return ${measure.formula};`);
+              newRow[measure.measure_name] = func(...values);
+            } catch (e) {
+              console.warn(`Error evaluating formula for ${measure.measure_name}:`, e);
+              newRow[measure.measure_name] = 0;
+            }
+          });
+          return newRow;
+        });
       }
 
       setPreviewDataMap(prev => ({ ...prev, [activeAreaId]: resultData }));
@@ -433,7 +491,10 @@ export const ReportBuilder = () => {
   };
 
   const matrixColumns = useMemo(() => {
-    if (activeArea?.chartType !== 'MATRIX' || !(activeArea.columns || []).length) return [];
+    if (activeArea?.chartType !== 'MATRIX') return [];
+    if (!(activeArea.columns || []).length) {
+      return [{ sortableKey: '_total', displayKey: 'Toplam' }];
+    }
     
     // Extract unique column keys from the aggregated data
     const cols = new Set<string>();
@@ -862,7 +923,7 @@ export const ReportBuilder = () => {
                   const isDimensionAdded = activeArea.dimensions.some(d => d.columnName === col.name);
                   const isColumnAdded = (activeArea.columns || []).some(d => d.columnName === col.name);
                   const isMetricAdded = activeArea.metrics.some(m => m.columnName === col.name);
-                  const isNumeric = col.type === 'number';
+                  const isNumeric = col.type === 'number' || col.type === 'percentage' || col.type === 'currency';
 
                   return (
                     <div key={col.name} className="flex items-center justify-between p-2 hover:bg-slate-50 border border-slate-100 rounded-lg group transition-colors">
@@ -1079,6 +1140,12 @@ export const ReportBuilder = () => {
                 >
                   <PieChart size={16} /> Pasta Grafik
                 </button>
+                <button
+                  onClick={() => updateActiveArea({ chartType: 'KPI' })}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeArea.chartType === 'KPI' ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'}`}
+                >
+                  <BarChart3 size={16} /> KPI Kartı
+                </button>
               </div>
             </div>
 
@@ -1168,11 +1235,14 @@ export const ReportBuilder = () => {
                               </td>
                             );
                           })}
-                          {activeArea.metrics.map((metric, j) => (
-                            <td key={`td-met-${i}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-600 text-right font-mono">
-                              {formatForDisplay(row[metric.columnName], 'number')}
-                            </td>
-                          ))}
+                          {activeArea.metrics.map((metric, j) => {
+                            const metricColDef = availableColumns.find(c => c.name === metric.columnName);
+                            return (
+                              <td key={`td-met-${i}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-600 text-right font-mono">
+                                {formatForDisplay(row[metric.columnName], metricColDef?.type || 'number')}
+                              </td>
+                            );
+                          })}
                         </tr>
                       ))}
                     </tbody>
@@ -1267,6 +1337,39 @@ export const ReportBuilder = () => {
                   </div>
                 )}
 
+                {activeArea.chartType === 'KPI' && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {activeArea.metrics.map((metric, idx) => {
+                      // KPI için toplam değeri hesapla
+                      const totalValue = processedData.reduce((sum, row) => {
+                        const val = Number(row[metric.columnName]) || 0;
+                        return sum + val;
+                      }, 0);
+                      
+                      // Eğer AVG ise ortalama al
+                      const finalValue = metric.aggregation === 'AVG' && processedData.length > 0 
+                        ? totalValue / processedData.length 
+                        : totalValue;
+
+                      const colDef = availableColumns.find(c => c.name === metric.columnName);
+                      const formatType = colDef?.type || 'number';
+
+                      return (
+                        <div key={`kpi-${idx}`} className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-center items-center text-center">
+                          <p className="text-sm font-medium text-slate-500 mb-2">{metric.label}</p>
+                          <p className="text-3xl font-bold text-slate-800">
+                            {formatForDisplay(finalValue, formatType)}
+                          </p>
+                        </div>
+                      );
+                    })}
+                    {activeArea.metrics.length === 0 && (
+                      <div className="col-span-full p-8 text-center text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                        KPI kartı oluşturmak için en az bir metrik seçin.
+                      </div>
+                    )}
+                  </div>
+                )}
                 {activeArea.chartType === 'MATRIX' && (
                   <div className="overflow-x-auto border border-slate-200 rounded-lg">
                     <table className="min-w-full divide-y divide-slate-200">
@@ -1309,10 +1412,13 @@ export const ReportBuilder = () => {
                             {/* Her bir sütun kombinasyonu için metrikleri göster */}
                             {matrixColumns.map((col, colIdx) => (
                                activeArea.metrics.map((metric, j) => {
-                                const val = row._cols && row._cols[col.sortableKey] ? row._cols[col.sortableKey][metric.columnName] : 0;
+                                const val = row._cols && row._cols[col.sortableKey] 
+                                  ? row._cols[col.sortableKey][metric.columnName] 
+                                  : (col.sortableKey === '_total' ? row[metric.columnName] : 0);
+                                const metricColDef = availableColumns.find(c => c.name === metric.columnName);
                                 return (
                                   <td key={`td-met-${i}-${colIdx}-${j}`} className="px-4 py-3 whitespace-nowrap text-sm text-slate-600 text-right font-mono">
-                                    {formatForDisplay(val, 'number')}
+                                    {formatForDisplay(val, metricColDef?.type || 'number')}
                                   </td>
                                 );
                               })

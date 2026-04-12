@@ -84,7 +84,7 @@ export interface Hotel {
 }
 
 export type AggregationType = 'SUM' | 'AVG' | 'MIN' | 'MAX' | 'COUNT';
-export type ChartType = 'TABLE' | 'BAR' | 'LINE' | 'PIE' | 'MATRIX' | 'HORIZONTAL_BAR';
+export type ChartType = 'TABLE' | 'BAR' | 'LINE' | 'PIE' | 'MATRIX' | 'HORIZONTAL_BAR' | 'KPI';
 
 export type DateGranularity = 'day' | 'week' | 'month' | 'quarter' | 'year' | 'dayOfWeek';
 

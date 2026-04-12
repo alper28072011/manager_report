@@ -42,6 +42,26 @@ class QueryTemplate(Base):
     
     hotel = relationship("Hotel", back_populates="queries")
 
+class HotelParameter(Base):
+    __tablename__ = "hotel_parameters"
+    id = Column(Integer, primary_key=True, index=True)
+    hotel_id = Column(Integer, ForeignKey("hotels.id"))
+    param_key = Column(String)
+    param_value = Column(String)
+    param_type = Column(String) # number, date, text
+    
+    hotel = relationship("Hotel")
+
+class CalculatedMeasure(Base):
+    __tablename__ = "calculated_measures"
+    id = Column(Integer, primary_key=True, index=True)
+    hotel_id = Column(Integer, ForeignKey("hotels.id"))
+    measure_name = Column(String)
+    formula = Column(String)
+    format_type = Column(String) # percentage, currency, number
+    
+    hotel = relationship("Hotel")
+
 Base.metadata.create_all(bind=engine)
 
 def get_db():

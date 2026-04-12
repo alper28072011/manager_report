@@ -50,6 +50,22 @@ service cloud.firestore {
              data.is_active is bool;
     }
 
+    function isValidHotelParameter(data) {
+      return data.keys().hasAll(['hotel_id', 'param_key', 'param_value', 'param_type']) &&
+             data.hotel_id is string &&
+             data.param_key is string && data.param_key.size() > 0 && data.param_key.size() < 100 &&
+             data.param_value is string && data.param_value.size() > 0 && data.param_value.size() < 500 &&
+             data.param_type in ['number', 'date', 'text'];
+    }
+
+    function isValidCalculatedMeasure(data) {
+      return data.keys().hasAll(['hotel_id', 'measure_name', 'formula', 'format_type']) &&
+             data.hotel_id is string &&
+             data.measure_name is string && data.measure_name.size() > 0 && data.measure_name.size() < 100 &&
+             data.formula is string && data.formula.size() > 0 && data.formula.size() < 1000 &&
+             data.format_type in ['number', 'percentage', 'currency'];
+    }
+
     // ===============================================================
     // Collections
     // ===============================================================
@@ -96,6 +112,20 @@ service cloud.firestore {
     }
     match /report_views/{viewId} {
       allow read, write: if isAuthenticated();
+    }
+
+    match /hotel_parameters/{paramId} {
+      allow read: if isAuthenticated();
+      allow create: if isAdmin() && isValidHotelParameter(request.resource.data);
+      allow update: if isAdmin() && isValidHotelParameter(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /calculated_measures/{measureId} {
+      allow read: if isAuthenticated();
+      allow create: if isAdmin() && isValidCalculatedMeasure(request.resource.data);
+      allow update: if isAdmin() && isValidCalculatedMeasure(request.resource.data);
+      allow delete: if isAdmin();
     }
   }
 }
